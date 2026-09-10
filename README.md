@@ -1,76 +1,79 @@
-# Prueba Técnica - Claro Data Mesh
+# Prueba Tecnica - Claro Data Mesh
 
 ## Objetivo
 
-Implementar el producto de datos **`cliente_360_churn_upsell`** para el dominio **Postpago Residencial**, consolidando información de clientes, productos, uso y PQR para activar campañas de retenciÃ³n y upsell.
+Implementar el producto de datos `cliente_360_churn_upsell` para el dominio Postpago Residencial, consolidando informacion de clientes, productos, uso y PQR para activar campanas de retencion y upsell.
 
-## Fuentes de Datos
+## Fuentes de datos
 
-| Archivo | DescripciÃ³n |
-|---------|-------------|
+| Archivo | Descripcion |
+|---|---|
 | `dim_cliente.csv` | Maestro de clientes |
-| `dim_producto.csv` | CatÃ¡logo de productos/planes |
+| `dim_producto.csv` | Catalogo de productos y planes |
 | `fact_uso_servicio.csv` | Consumo mensual por cliente y producto |
 | `fact_pqr.csv` | Peticiones, quejas y reclamos |
 
 ## Arquitectura
 
-```
-Fuentes (CSV)
-    â†“
-Bronze (L1 Raw) â†’ main.claro_postpago.l1_raw.*
-    â†“
-Silver (L2 Curated) â†’ main.claro_postpago.l2_curated.*
-    â†“
-Cuarentena â†’ main.claro_postpago.l2_curated.*_quarantine
-    â†“
-Gold (L3 Certified) â†’ main.claro_postpago.l3_certified.cliente_360_churn_upsell
-    â†“
-Consumidores â†’ Salesforce Data Cloud, Power BI, Mercadeo Digital
+```text
+Fuentes CSV
+    |
+    v
+Bronze (L1 Raw) -> main.claro_postpago.l1_raw.*
+    |
+    v
+Silver (L2 Curated) -> main.claro_postpago.l2_curated.*
+    |
+    v
+Cuarentena -> main.claro_postpago.l2_curated.*_quarantine
+    |
+    v
+Gold (L3 Certified) -> main.claro_postpago.l3_certified.cliente_360_churn_upsell
+    |
+    v
+Consumidores -> Salesforce Data Cloud, Power BI y Mercadeo Digital
 ```
 
-## Estructura del Repositorio
+## Estructura del repositorio
 
-```
+```text
 prueba-tecnica-claro-data-mesh/
-â��â�¬â�¬ src/
-â�¬â¬¬ â”œâ¬¬ ingestion/          # Notebooks de ingesta a Bronze
-â¬¬â¬¬ â”œâ¬¬ silver/             # Transformaciones Silver
-â¬¬â¬¬ â”œâ¬¬ gold/               # ConstrucciÃ³n del producto Gold
-â¬¬â¬¬ â”œâ¬¬ quality/            # Controles de calidad
-â¬¬â¬¬ â””â¬¬ common/             # Utilidades compartidas
-â¬¬â¬¬ â”œâ¬¬ resources/          # Recursos estÃ¡ticos
-â¬¬â¬¬ â”œâ¬¬ infrastructure/     # IaC (Terraform)
-â¬¬â¬¬ â”œâ¬¬ tests/              # Pruebas unitarias
-â¬¬â¬¬ â”œâ¬¬ docs/
-â¬¬â¬¬ â”‚   â”œâ¬¬ architecture/    # Diagramas
-â¬¬â¬¬ â”‚   â””â¬¬ data_contract/   # Contratos de datos
-â¬¬â¬¬ â”œâ¬¬ terraform/          # Infraestructura como CÃ³digo
-â¬¬â¬¬ â”œâ¬¬ .github/
-â¬¬â¬¬ â”‚   â””â¬¬ workflows/       # CI/CD
-â¬¬â¬¬ â”œâ¬¬ .gitignore
-â¬¬â¬¬ â”œâ¬¬ README.md
-â¬¬â¬¬ â””â¬¬ databricks.yml      # Databricks Asset Bundle
+├── src/
+│   ├── ingestion/          # Ingesta a Bronze
+│   ├── silver/             # Transformaciones Silver
+│   ├── gold/               # Producto Gold
+│   ├── quality/            # Controles de calidad
+│   └── common/             # Utilidades compartidas
+├── resources/              # Recursos estaticos
+├── infrastructure/         # Infraestructura como codigo
+├── tests/                  # Pruebas unitarias
+├── docs/
+│   ├── architecture/      # Diagramas
+│   └── data_contract/      # Contratos de datos
+├── .github/workflows/      # CI/CD
+├── .gitignore
+├── README.md
+└── databricks.yml          # Databricks Asset Bundle
 ```
 
-## Convenciones de Nombres
+## Convenciones de nombres
 
 ### Tablas
 
-| Capa | PatrÃ³n | Ejemplo |
-|------|--------|---------|
-| Bronze | `main.claro_postpago.l1_raw.{tabla}_bronze` | `l1_raw.dim_cliente_bronze` |
-| Silver | `main.claro_postpago.l2_curated.{tabla}_silver` | `l2_curated.dim_cliente_silver` |
-| Cuarentena | `main.claro_postpago.l2_curated.{tabla}_quarantine` | `l2_curated.fact_uso_servicio_quarantine` |
-| Gold | `main.claro_postpago.l3_certified.{producto}` | `l3_certified.cliente_360_churn_upsell` |
+| Capa | Patron | Ejemplo |
+|---|---|---|
+| Bronze | `main.claro_postpago.l1_raw.{tabla}_bronze` | `main.claro_postpago.l1_raw.dim_cliente_bronze` |
+| Silver | `main.claro_postpago.l2_curated.{tabla}_silver` | `main.claro_postpago.l2_curated.dim_cliente_silver` |
+| Cuarentena | `main.claro_postpago.l2_curated.{tabla}_quarantine` | `main.claro_postpago.l2_curated.fact_uso_servicio_quarantine` |
+| Gold | `main.claro_postpago.l3_certified.{producto}` | `main.claro_postpago.l3_certified.cliente_360_churn_upsell` |
 
-### Ramas Git
+### Git
 
-- `main` â†’ ProducciÃ³n
-- `dev` â†’ Desarrollo
-- `feature/{descripcion}` â†’ Nuevas funcionalidades
+- `main`: rama estable.
+- `dev`: desarrollo.
+- `feature/{descripcion}`: nuevas funcionalidades.
 
-### Commits
+Ejemplos de commits:
 
 ```bash
 git commit -m "feat: add bronze ingestion"
@@ -78,14 +81,19 @@ git commit -m "fix: handle null estrato"
 git commit -m "docs: add architecture diagram"
 ```
 
-## EjecuciÃ³n del Pipeline
+## Ejecucion del pipeline
 
 ### 1. Cargar CSV en Databricks
 
-- Usa **Unity Catalog Volumes** o la opciÃ³n **Upload Data** en la UI.
-- Ruta recomendada: `main.claro_postpago.volumes.bronze/`
+Usar Unity Catalog Volumes o la opcion Upload Data de la interfaz. No usar `/FileStore/tables/` en el entorno Serverless validado.
 
-### 2. Ejecutar Notebooks en Orden
+Ruta de trabajo prevista para archivos, sujeta a validacion de permisos:
+
+```text
+/Volumes/main/claro_postpago/<schema>/<volume>/
+```
+
+### 2. Ejecutar notebooks en orden
 
 1. `src/ingestion/01_bronze_ingestion.ipynb`
 2. `src/silver/02_silver_dimensions.ipynb`
@@ -94,65 +102,64 @@ git commit -m "docs: add architecture diagram"
 5. `src/gold/05_gold_cliente_360.ipynb`
 6. `src/quality/06_gold_quality_gate.ipynb`
 
-### 3. Validar Quality Gate
+### 3. Validar quality gate
 
-- Verificar mÃ©tricas de calidad.
-- Confirmar que Gold cumple reglas de certificaciÃ³n.
+- Verificar las metricas de calidad.
+- Confirmar que Gold cumple las reglas de certificacion.
+- Bloquear la publicacion si falla una regla critica.
 
-### 4. Exportar Entregables
+### 4. Exportar entregables
 
 - Notebooks: `.dbc` o enlace compartido.
 - Diagrama: `.png` o `.pdf` desde draw.io.
-- PresentaciÃ³n: `.pptx`.
+- Respuestas teoricas: `.docx` o `.pdf`.
+- Presentacion: `.pptx`.
 
 ## Entregables
 
-| CÃ³digo | DescripciÃ³n | Formato |
-|--------|-------------|---------|
-| E1 | Notebooks Bronze/Silver/Gold | `.dbc` o enlace |
-| E2 | Scripts de calidad | `.py` / `.sql` |
-| E3 | Diagrama de arquitectura | `.png` / `.pdf` |
-| E4 | Respuestas teÃ³ricas (T1-T7) | `.pdf` / `.docx` |
-| E5 | PresentaciÃ³n ejecutiva | `.pptx` (max 10 lÃ¡minas) |
+| Codigo | Descripcion | Formato |
+|---|---|---|
+| E1 | Notebooks Bronze, Silver y Gold | `.dbc` o enlace |
+| E2 | Scripts de calidad | `.py` o `.sql` |
+| E3 | Diagrama de arquitectura | `.png` o `.pdf` |
+| E4 | Respuestas teoricas T1-T7 | `.pdf` o `.docx` |
+| E5 | Presentacion ejecutiva, maximo 10 laminas | `.pptx` |
 
-## Data Contract
+## Data contract inicial
 
 | Elemento | Propuesta |
-|----------|-----------|
+|---|---|
 | Producto | `cliente_360_churn_upsell` |
 | Dominio | Postpago Residencial |
 | Capa | L3 / Certified / Gold |
-| Owner de negocio | LÃ¬der de Postpago Residencial |
-| Owner tÃ©cnico | Data Engineer del dominio |
-| Consumidores | Mercadeo Digital, Data Cloud, Power BI |
+| Owner de negocio | Lider de Postpago Residencial |
+| Owner tecnico | Data Engineer del dominio |
+| Consumidores | Mercadeo Digital, Data Cloud y Power BI |
 | Grano | Un registro por cliente activo |
-| SLA | ActualizaciÃ³n diaria, disponible antes de 08:00 |
-| Esquema mÃ¬nimo | `id_cliente, segmento, ciudad, producto_actual, consumo_promedio_gb, total_incidencias_red, total_pqr, pqr_abiertos, satisfaccion_promedio, churn_risk, upsell_flag` |
-| Reglas de calidad | `id_cliente` no nulo y ÃƒÂºnico, `churn_risk` en {Alto, Medio, Bajo}, `satisfaccion` entre 1 y 5, `consumo` no negativo |
-| Seguridad | Acceso restringido, mÃ¬nimo privilegio |
-| Trazabilidad | Metadatos de fuente, fecha de ingesta, tablas origen |
-| Incumplimiento | No certificar Gold, generar alerta, preservar evidencia |
+| SLA | Actualizacion diaria, disponible antes de las 08:00 |
+| Esquema minimo | `id_cliente`, `segmento`, `ciudad`, `producto_actual`, `consumo_promedio_gb`, `total_incidencias_red`, `total_pqr`, `pqr_abiertos`, `satisfaccion_promedio`, `churn_risk`, `upsell_flag` |
+| Reglas de calidad | `id_cliente` no nulo y unico; `churn_risk` valido; satisfaccion entre 1 y 5; consumo no negativo |
+| Seguridad | Acceso restringido y minimo privilegio |
+| Trazabilidad | Fuente, fecha de ingesta y tablas de origen |
+| Incumplimiento | No certificar Gold; generar alerta y preservar evidencia |
 
-## OptimizaciÃ³n (P6)
+## Optimizacion P6
 
 Para `fact_uso_servicio` a gran escala:
 
-- **Particionar por:** `periodo`
-- **Z-ORDER por:** `(id_cliente, id_producto)`
-- **Comandos:**
-  ```sql
-  OPTIMIZE l2_curated.fact_uso_servicio_silver ZORDER BY (id_cliente, id_producto);
-  VACUUM l2_curated.fact_uso_servicio_silver RETAIN 168 HOURS;
-  ```
+- Particionar por `periodo` si el volumen y los patrones de consulta lo justifican.
+- Evaluar `OPTIMIZE` y clustering por `id_cliente` e `id_producto` segun el entorno.
+- Evitar particionar por `id_cliente` debido a su alta cardinalidad.
+- Aplicar `VACUUM` solo con una politica de retencion aprobada.
 
-## PrÃ³ximos Pasos
+## Estado
 
-1. Recibir los 4 CSV reales.
-2. Ejecutar perfilamiento.
-3. Ajustar reglas de calidad.
-4. Implementar transformaciones.
-5. Generar resultados y evidencias.
+El repositorio contiene la estructura inicial y el README. Los cuatro CSV aun deben recibirse para realizar el perfilamiento real y cerrar las reglas de transformacion.
 
-## Contacto
+## Proximos pasos
 
-Repositorio: https://github.com/Richard9003/prueba-tecnica-claro-data-mesh
+1. Recibir los cuatro CSV.
+2. Perfilar estructura, volumen y calidad.
+3. Aprobar decisiones de tratamiento.
+4. Implementar Bronze, Silver, cuarentena y Gold.
+5. Ejecutar quality gate y generar evidencias.
