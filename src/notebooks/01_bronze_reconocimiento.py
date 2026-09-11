@@ -211,10 +211,12 @@ display(pqr_cliente_huerfano)
 
 # COMMAND ----------
 
+estrato_numerico = F.col("estrato").cast("double")
+
 clientes_estrato_invalido = df_clientes.filter(
     F.col("estrato").isNotNull()
     & (F.trim(F.col("estrato")) != "")
-    & ~F.col("estrato").cast("int").between(1, 6)
+    & ~estrato_numerico.between(1, 6)
 )
 
 uso_consumo_negativo = df_uso.filter(F.col("consumo_datos_gb").cast("double") < 0)
@@ -296,8 +298,8 @@ display(
     df_clientes.select(
         F.min(F.to_date("fecha_alta", "yyyy-MM-dd")).alias("fecha_alta_min"),
         F.max(F.to_date("fecha_alta", "yyyy-MM-dd")).alias("fecha_alta_max"),
-        F.min(F.col("estrato").cast("int")).alias("estrato_min"),
-        F.max(F.col("estrato").cast("int")).alias("estrato_max"),
+        F.min(F.col("estrato").cast("double")).alias("estrato_min"),
+        F.max(F.col("estrato").cast("double")).alias("estrato_max"),
     )
 )
 
