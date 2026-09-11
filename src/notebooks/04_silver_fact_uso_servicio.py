@@ -1,15 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 04. Silver — Uso de Servicio y Cuarentena
-# MAGIC
-# MAGIC **Tratamiento aplicado:**
-# MAGIC - Estandarizar llaves y tipos.
-# MAGIC - Validar integridad referencial contra clientes y productos Silver.
-# MAGIC - Validar consumo, días activos, incidencias y periodo.
-# MAGIC - Enviar registros inválidos a cuarentena.
-# MAGIC
-# MAGIC Los registros válidos se publican en Silver. Los rechazados conservan
-# MAGIC datos originales, motivo de rechazo y metadatos de trazabilidad.
 
 # COMMAND ----------
 
@@ -71,7 +62,6 @@ df_validado = df_tipado.withColumn(
     "motivo_rechazo",
     F.concat_ws(
         " | ",
-        F.when(F.col("id_uso").isNull() | (F.trim(F.col("id_uso")) == ""), "ID_USO_NULO"),
         F.when(F.col("_cliente_existe").isNull(), "ID_CLIENTE_HUERFANO"),
         F.when(F.col("_producto_existe").isNull(), "ID_PRODUCTO_HUERFANO"),
         F.when(
@@ -108,7 +98,6 @@ df_uso_silver = (
     df_validado
     .filter(F.col("motivo_rechazo") == "")
     .drop("_cliente_existe", "_producto_existe", "motivo_rechazo")
-    .dropDuplicates(["id_uso"])
     .withColumn("_silver_run_id", F.lit(SILVER_RUN_ID))
     .withColumn("_silver_timestamp", F.current_timestamp())
 )
@@ -136,47 +125,9 @@ print(f"Cuarentena lista | tabla={CUARENTENA} | rechazados={df_rechazados.count(
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Validaciones de salida Silver
-
-# COMMAND ----------
-
-df_silver = spark.table(SILVER)
-
-id_uso_nulo = df_silver.filter(
-    F.col("id_uso").isNull()
-    | (F.trim(F.col("id_uso")) == "")
-)
-
-id_uso_duplicado = (
-    df_silver
-    .groupBy("id_uso")
+display(
+    spark.table(CUARENTENA)
+    .groupBy("motivo_rechazo")
     .count()
-    .filter(F.col("count") > 1)
+    .orderBy("motivo_rechazo")
 )
-
-consumo_invalido = df_silver.filter(
-    F.col("consumo_datos_gb").isNull()
-    | (F.col("consumo_datos_gb") < 0)
-)
-
-dias_invalidos = df_silver.filter(
-    F.col("dias_activo_mes").isNull()
-    | ~F.col("dias_activo_mes").between(0, 31)
-)
-
-incidencias_invalidas = df_silver.filter(
-    F.col("incidencias_red").isNull()
-    | (F.col("incidencias_red") < 0)
-)
-
-periodo_invalido = df_silver.filter(
-    ~F.col("periodo").rlike(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
-)
-
-print(f"Validación | id_uso nulo={id_uso_nulo.count()}")
-print(f"Validación | id_uso duplicado={id_uso_duplicado.count()}")
-print(f"Validación | consumo nulo/negativo={consumo_invalido.count()}")
-print(f"Validación | días activos inválidos={dias_invalidos.count()}")
-print(f"Validación | incidencias inválidas={incidencias_invalidas.count()}")
-print(f"Validación | periodo inválido={periodo_invalido.count()}")

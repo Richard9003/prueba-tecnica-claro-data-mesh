@@ -2,17 +2,11 @@
 # MAGIC %md
 # MAGIC # 02. Silver — Dimensión Cliente
 # MAGIC
-# MAGIC **Tratamiento aplicado:**
+# MAGIC Tratamiento aprobado:
 # MAGIC - Eliminar duplicados exactos.
-# MAGIC - Estrato nulo: imputar mediana global de estratos válidos.
 # MAGIC - Ciudad nula/vacía: `No informado`.
-# MAGIC - Estandarizar tipos, texto y fecha.
-# MAGIC - Conservar metadatos de trazabilidad.
-# MAGIC
-# MAGIC **Validaciones de calidad:**
-# MAGIC - `id_cliente` no nulo y sin duplicados.
-# MAGIC - `estrato` entre 1 y 6.
-# MAGIC - `ciudad` no nula/vacía después del tratamiento.
+# MAGIC - Estrato nulo: imputar mediana global de estratos válidos.
+# MAGIC - Conservar valor original y trazabilidad de la imputación.
 
 # COMMAND ----------
 
@@ -46,6 +40,14 @@ def texto_mayusculas(columna):
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Preparación y cálculo de mediana
+# MAGIC
+# MAGIC El estrato llega como texto decimal (`1.0`, `2.0`, etc.).
+# MAGIC Se convierte a DOUBLE y luego a INT para mantener el tipo numérico en Silver.
+
+# COMMAND ----------
+
 df_bronze = spark.table(BRONZE)
 
 columnas_origen = [
@@ -74,6 +76,23 @@ print(f"Mediana de estrato calculada: {mediana_estrato}")
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Construcción Silver
+
+# COMMAND ----------
+
+estrato_origen = F.trim(F.col("estrato"))
+
+estrato_es_nulo = (
+    F.col("estrato").isNull()
+    | (estrato_origen == "")
+)
+
+ciudad_es_nula = (
+    F.col("ciudad").isNull()
+    | (F.trim(F.col("ciudad")) == "")
+)
+
 df_cliente_silver = (
     df_sin_duplicados
     .select(
@@ -82,24 +101,57 @@ df_cliente_silver = (
         F.expr("try_cast(documento AS BIGINT)").alias("documento"),
         limpiar_texto("nombre_completo").alias("nombre_completo"),
         limpiar_texto("segmento").alias("segmento"),
-        F.coalesce(
-            estrato_tipado.cast("int"),
-            F.lit(mediana_estrato).cast("int"),
-        ).alias("estrato"),
+
+        # Trazabilidad de estrato.
+        estrato_origen.alias("estrato_origen"),
+
+        # Estrato numérico final: valor fuente o mediana si llegó nulo.
         F.when(
-            F.col("ciudad").isNull()
-            | (F.trim(F.col("ciudad")) == ""),
-            F.lit("No informado"),
+            estrato_es_nulo,
+            F.lit(mediana_estrato).cast("int")
+        ).otherwise(
+            estrato_tipado.cast("int")
+        ).alias("estrato"),
+
+        F.when(
+            estrato_es_nulo,
+            F.lit(True)
+        ).otherwise(F.lit(False)).alias("estrato_imputado"),
+
+        F.when(
+            estrato_es_nulo,
+            F.lit("MEDIANA_GLOBAL")
+        ).otherwise(F.lit("NO_APLICA")).alias("estrato_metodo_imputacion"),
+
+        # Ciudad categórica: se usa una categoría explícita, no una ciudad inventada.
+        F.when(
+            ciudad_es_nula,
+            F.lit("No informado")
         ).otherwise(
             limpiar_texto("ciudad")
         ).alias("ciudad"),
+
+        F.when(
+            ciudad_es_nula,
+            F.lit(True)
+        ).otherwise(F.lit(False)).alias("ciudad_imputada"),
+
+        F.when(
+            ciudad_es_nula,
+            F.lit("NO_INFORMADO")
+        ).otherwise(F.lit("NO_APLICA")).alias("ciudad_metodo_tratamiento"),
+
         F.expr("try_to_date(fecha_alta, 'yyyy-MM-dd')").alias("fecha_alta"),
         limpiar_texto("canal_adquisicion").alias("canal_adquisicion"),
         limpiar_texto("estado_cliente").alias("estado_cliente"),
+
+        # Metadatos heredados de Bronze.
         F.col("_source_file"),
         F.col("_ingestion_timestamp"),
         F.col("_pipeline_run_id"),
         F.col("_record_hash"),
+
+        # Metadatos de transformación Silver.
         F.lit(SILVER_RUN_ID).alias("_silver_run_id"),
         F.current_timestamp().alias("_silver_timestamp"),
     )
@@ -155,3 +207,28 @@ print(f"Validación | id_cliente nulo={id_cliente_nulo.count()}")
 print(f"Validación | id_cliente duplicado={id_cliente_duplicado.count()}")
 print(f"Validación | estrato fuera de 1-6={estrato_invalido.count()}")
 print(f"Validación | ciudad nula/vacía={ciudad_nula.count()}")
+print(
+    f"Calidad | estratos imputados="
+    f"{df_silver.filter(F.col('estrato_imputado')).count()}"
+)
+print(
+    f"Calidad | ciudades tratadas como No informado="
+    f"{df_silver.filter(F.col('ciudad_imputada')).count()}"
+)
+
+display(
+    df_silver
+    .filter(F.col("estrato_imputado") | F.col("ciudad_imputada"))
+    .select(
+        "id_cliente",
+        "estrato_origen",
+        "estrato",
+        "estrato_imputado",
+        "estrato_metodo_imputacion",
+        "ciudad",
+        "ciudad_imputada",
+        "ciudad_metodo_tratamiento",
+        "_source_file",
+    )
+    .orderBy("id_cliente")
+)
