@@ -53,6 +53,7 @@ def leer_csv_bronze(nombre_archivo: str):
         spark.read
         .option("header", True)
         .option("inferSchema", False)
+        .option("encoding", "UTF-8")
         .csv(f"{RUTA_LANDING}/{nombre_archivo}")
     )
 
