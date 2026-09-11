@@ -15,22 +15,42 @@ SILVER_RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 # COMMAND ----------
 
 def limpiar_texto(columna):
-    return F.initcap(F.regexp_replace(F.trim(F.col(columna)), r"\s+", " "))
+    return F.initcap(
+        F.regexp_replace(
+            F.trim(F.col(columna)),
+            r"\s+",
+            " "
+        )
+    )
 
 def texto_mayusculas(columna):
-    return F.upper(F.regexp_replace(F.trim(F.col(columna)), r"\s+", " "))
+    return F.upper(
+        F.regexp_replace(
+            F.trim(F.col(columna)),
+            r"\s+",
+            " "
+        )
+    )
 
 # COMMAND ----------
 
 df_bronze = spark.table(BRONZE)
 
-columnas_origen = [c for c in df_bronze.columns if not c.startswith("_")]
+columnas_origen = [
+    columna
+    for columna in df_bronze.columns
+    if not columna.startswith("_")
+]
 
 df_sin_duplicados = df_bronze.dropDuplicates(columnas_origen)
 
+# El CSV representa estrato como texto decimal: "1.0", "2.0", etc.
+# Se convierte primero a DOUBLE y después a INT.
+estrato_tipado = F.expr("try_cast(estrato AS DOUBLE)")
+
 estratos_validos = (
     df_sin_duplicados
-    .select(F.expr("try_cast(estrato AS INT)").alias("estrato"))
+    .select(estrato_tipado.alias("estrato"))
     .filter(F.col("estrato").between(1, 6))
 )
 
@@ -39,6 +59,8 @@ mediana_estrato = (
     .agg(F.expr("percentile_approx(estrato, 0.5)").alias("mediana"))
     .first()["mediana"]
 )
+
+print(f"Mediana de estrato calculada: {mediana_estrato}")
 
 # COMMAND ----------
 
@@ -51,13 +73,16 @@ df_cliente_silver = (
         limpiar_texto("nombre_completo").alias("nombre_completo"),
         limpiar_texto("segmento").alias("segmento"),
         F.coalesce(
-            F.expr("try_cast(estrato AS INT)"),
+            estrato_tipado.cast("int"),
             F.lit(mediana_estrato).cast("int"),
         ).alias("estrato"),
         F.when(
-            F.col("ciudad").isNull() | (F.trim(F.col("ciudad")) == ""),
+            F.col("ciudad").isNull()
+            | (F.trim(F.col("ciudad")) == ""),
             F.lit("No informado"),
-        ).otherwise(limpiar_texto("ciudad")).alias("ciudad"),
+        ).otherwise(
+            limpiar_texto("ciudad")
+        ).alias("ciudad"),
         F.expr("try_to_date(fecha_alta, 'yyyy-MM-dd')").alias("fecha_alta"),
         limpiar_texto("canal_adquisicion").alias("canal_adquisicion"),
         limpiar_texto("estado_cliente").alias("estado_cliente"),
@@ -69,6 +94,8 @@ df_cliente_silver = (
         F.current_timestamp().alias("_silver_timestamp"),
     )
 )
+
+# COMMAND ----------
 
 (
     df_cliente_silver.write
@@ -86,14 +113,41 @@ print(
 
 # COMMAND ----------
 
-duplicados = (
-    spark.table(SILVER)
+# MAGIC %md
+# MAGIC ## Validaciones de salida Silver
+
+# COMMAND ----------
+
+df_silver = spark.table(SILVER)
+
+id_cliente_nulo = df_silver.filter(
+    F.col("id_cliente").isNull()
+    | (F.trim(F.col("id_cliente")) == "")
+)
+
+id_cliente_duplicado = (
+    df_silver
     .groupBy("id_cliente")
     .count()
     .filter(F.col("count") > 1)
 )
 
-nulos_llave = spark.table(SILVER).filter(F.col("id_cliente").isNull())
+estrato_invalido = df_silver.filter(
+    ~F.col("estrato").between(1, 6)
+)
 
-print(f"Validación | id_cliente nulo={nulos_llave.count()}")
-print(f"Validación | id_cliente duplicado={duplicados.count()}")
+ciudad_nula = df_silver.filter(
+    F.col("ciudad").isNull()
+    | (F.trim(F.col("ciudad")) == "")
+)
+
+print(f"Validación | id_cliente nulo={id_cliente_nulo.count()}")
+print(f"Validación | id_cliente duplicado={id_cliente_duplicado.count()}")
+print(f"Validación | estrato fuera de 1-6={estrato_invalido.count()}")
+print(f"Validación | ciudad nula/vacía={ciudad_nula.count()}")
+
+display(
+    df_silver
+    .filter(F.col("ciudad") == "No informado")
+    .select("id_cliente", "estrato", "ciudad", "_source_file")
+)
