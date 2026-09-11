@@ -31,6 +31,30 @@ Motivo:
 
 Liquid Clustering debe validarse en el workspace/edición antes de adoptarse, porque su disponibilidad depende de la versión y configuración de Databricks.
 
+Desde Databricks Runtime 15.4 existe además la variante automática (`CLUSTER BY AUTO`), donde es Databricks quien decide las llaves de clustering revisando el historial real de consultas, en vez de que uno las fije a mano. Las tres columnas de arriba son una hipótesis razonable con la información que tenemos hoy —uso por periodo, cliente y producto—, pero si en producción el patrón de consumo termina siendo otro (por ejemplo, si Mercadeo Digital filtra casi siempre por segmento en vez de por producto), tiene más sentido dejar que se ajuste solo que reabrir esta discusión cada semestre:
+
+```sql
+ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
+CLUSTER BY AUTO;
+```
+
+`CLUSTER BY AUTO` necesita Predictive Optimization habilitado en la tabla. Y ya que se toca el tema: Predictive Optimization es básicamente lo que hace innecesario programar `OPTIMIZE`, `VACUUM` y `ANALYZE` como jobs de mantenimiento aparte, porque Databricks los dispara solo según qué tan seguido se lee y se escribe la tabla. En cuentas de Unity Catalog creadas después de noviembre de 2024 viene activado por defecto; si no, se activa así:
+
+```sql
+ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
+SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true');
+```
+
+Un detalle que conviene dejar anotado para no llevarse una sorpresa: con Predictive Optimization activo, el `OPTIMIZE` automático compacta y respeta Liquid Clustering, pero no corre `ZORDER`. Si en cambio se sigue el camino sin Liquid Clustering (la alternativa del punto siguiente), el `ZORDER` hay que seguirlo programando aparte, no se hereda gratis.
+
+Y si más adelante cambian las llaves de clustering, o hace falta reorganizar toda la tabla y no solo lo que se escribió recientemente, en DBR 16+ existe `OPTIMIZE ... FULL` para forzar el reclustering completo:
+
+```sql
+OPTIMIZE claro_postpago.l2_curated.fact_uso_servicio_silver FULL;
+```
+
+Nada de esto aplica todavía a la tabla de la prueba —con ~50 registros no hay nada que Liquid Clustering o Predictive Optimization puedan optimizar—, pero es de las cosas que conviene activar desde el primer despliegue real y no después, cuando ya hay millones de archivos pequeños que reorganizar.
+
 ### 3. Alternativa si Liquid Clustering no está disponible
 
 Particionar por `periodo` y aplicar mantenimiento Delta:
@@ -47,6 +71,21 @@ Criterios:
 - Usar `ZORDER` por `id_cliente` e `id_producto` cuando los consumidores filtren frecuentemente por esas columnas.
 - Ejecutar `OPTIMIZE` según volumen, frecuencia de escritura y tamaño de archivos; no de manera indiscriminada.
 
+### 4. Tamaño de archivo y limpieza
+
+Desde DBR 10.4, optimized writes y auto compaction ya vienen activados por defecto para `MERGE`/`UPDATE`/`DELETE`, y en tablas administradas por Unity Catalog Databricks ajusta el tamaño de archivo automáticamente. No hay que tocar nada ahí salvo que ese tamaño automático no encaje con el storage subyacente, en cuyo caso se puede fijar un objetivo explícito:
+
+```sql
+ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
+SET TBLPROPERTIES ('delta.targetFileSize' = '128mb');
+```
+
+Lo que sí conviene decidir aparte es la política de `VACUUM`. `OPTIMIZE` compacta pero no borra los archivos viejos; eso lo hace `VACUUM`, y con Predictive Optimization también se dispara solo. El punto es no dejar el período de retención en el default (7 días) sin pensarlo, sino fijarlo según cuánto time travel o auditoría necesite el dominio:
+
+```sql
+VACUUM claro_postpago.l2_curated.fact_uso_servicio_silver RETAIN 168 HOURS;
+```
+
 ## Idempotencia e incrementalidad
 
 La prueba implementa una carga batch completa, reproducible e idempotente por resultado mediante reconstrucción determinista desde Bronze y `overwrite` de las tablas derivadas.
@@ -61,6 +100,14 @@ Para producción:
    - Producto: `id_producto`.
    - Uso: `id_uso`.
    - PQR: `id_caso`.
+
+   Aquí conviene habilitar Deletion Vectors sobre las tablas que reciban `MERGE` incremental. Sin ellos, cada actualización reescribe el archivo completo aunque solo cambien unas pocas filas, y sobre cientos de millones de registros eso empieza a costar tiempo y cómputo de más:
+
+   ```sql
+   ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
+   SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true');
+   ```
+
 5. Deduplicar el origen antes de `MERGE`, asegurando una fila por llave; esto evita coincidencias múltiples y resultados no deterministas.
 6. Mantener watermark batch por periodo/fecha de evento o por lote procesado para limitar el procesamiento a cambios nuevos.
 7. Recalcular Gold solo para clientes impactados cuando el volumen lo justifique.
