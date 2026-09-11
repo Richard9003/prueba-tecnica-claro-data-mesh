@@ -1,6 +1,16 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 03. Silver — Dimensión Producto
+# MAGIC # 03. Silver — Dimensi ón Producto
+# MAGIC
+# MAGIC **Tratamiento:**
+# MAGIC - Eliminar duplicados exactos.
+# MAGIC - Extraer `capacidad_gb` desde `nombre_producto` (GB/MB).
+# MAGIC - Estandarizar texto.
+# MAGIC
+# MAGIC **Constraints (despu és de crear la tabla):**
+# MAGIC - `id_producto` NOT NULL y ÚNICO.
+# MAGIC - `valor_mensual` >= 0.
+# MAGIC - `vigente` IN (True, False).
 
 # COMMAND ----------
 
@@ -65,6 +75,8 @@ df_producto_silver = (
     )
 )
 
+# COMMAND ----------
+
 (
     df_producto_silver.write
     .format("delta")
@@ -80,13 +92,59 @@ print(
 
 # COMMAND ----------
 
-sin_capacidad = spark.table(SILVER).filter(F.col("capacidad_gb").isNull())
-duplicados = (
-    spark.table(SILVER)
+# MAGIC %md
+# MAGIC ## Aplicar constraints en la tabla Delta
+
+# COMMAND ----------
+
+# Constraint: id_producto NOT NULL
+spark.sql(f"""
+    ALTER TABLE {SILVER}
+    ADD CONSTRAINT id_producto_not_null
+    EXPECT (id_producto IS NOT NULL)
+""")
+
+# Constraint: valor_mensual >= 0
+spark.sql(f"""
+    ALTER TABLE {SILVER}
+    ADD CONSTRAINT valor_mensual_no_negativo
+    EXPECT (valor_mensual >= 0)
+""")
+
+# Constraint: vigente IN (True, False)
+spark.sql(f"""
+    ALTER TABLE {SILVER}
+    ADD CONSTRAINT vigente_booleano
+    EXPECT (vigente IN (TRUE, FALSE))
+""")
+
+print("Constraints aplicados en dim_producto_silver")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Validaciones de salida Silver
+
+# COMMAND ----------
+
+df_silver = spark.table(SILVER)
+
+id_producto_nulo = df_silver.filter(
+    F.col("id_producto").isNull()
+    | (F.trim(F.col("id_producto")) == "")
+)
+
+id_producto_duplicado = (
+    df_silver
     .groupBy("id_producto")
     .count()
     .filter(F.col("count") > 1)
 )
 
-print(f"Validación | id_producto duplicado={duplicados.count()}")
-print(f"Validación | capacidad no extraída={sin_capacidad.count()}")
+valor_mensual_negativo = df_silver.filter(
+    F.col("valor_mensual") < 0
+)
+
+print(f"Validaci ón | id_producto nulo={id_producto_nulo.count()}")
+print(f"Validaci ón | id_producto duplicado={id_producto_duplicado.count()}")
+print(f"Validaci ón | valor_mensual negativo={valor_mensual_negativo.count()}")

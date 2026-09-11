@@ -3,7 +3,7 @@
 # MAGIC # 06. Gold — Cliente 360 (Churn + Upsell)
 # MAGIC
 # MAGIC **Caso:** Cliente 360 — Riesgo de Churn y Oportunidad de Upsell  
-# MAGIC **Alcance:** P3 (modelo Gold), P4 (reglas de negocio), P5 (consulta SQL), P6 (optimizaci ón), P7 (data contract).
+# MAGIC **Alcance:** P3 (modelo Gold), P4 (reglas de negocio), P5 (consulta SQL), P6 (optimizaci ón).
 # MAGIC
 # MAGIC **Columnas requeridas (P3):**
 # MAGIC - `id_cliente`, `segmento`, `ciudad`
@@ -16,6 +16,12 @@
 # MAGIC **Reglas de negocio (P4):**
 # MAGIC - `churn_risk`: Alto / Medio / Bajo
 # MAGIC - `upsell_flag`: True / False
+# MAGIC
+# MAGIC **Constraints (despu és de crear la tabla):**
+# MAGIC - `id_cliente` NOT NULL y ÚNICO.
+# MAGIC - `churn_risk` IN ('Alto', 'Medio', 'Bajo').
+# MAGIC - `consumo_promedio_gb` >= 0.
+# MAGIC - `upsell_flag` IN (True, False).
 
 # COMMAND ----------
 
@@ -172,7 +178,7 @@ gold_cliente_360 = (
 # MAGIC - **Bajo**: otro caso
 # MAGIC
 # MAGIC **upsell_flag:**
-# MAGIC - **True**: `consumo_promedio_gb > capacidad_gb * 1.80`
+# MAGIC - **True**: `consumo_promedio_gb > capacidad_gb * 1.80` (80% por encima de la capacidad)
 # MAGIC - **False**: otro caso (incluye `capacidad_gb` NULL)
 
 # COMMAND ----------
@@ -222,7 +228,44 @@ print(f"Gold listo | tabla={GOLD} | registros={gold_con_reglas.count()} | run_id
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 8. Validaciones de salida Gold
+# MAGIC ## 8. Aplicar constraints en la tabla Delta
+
+# COMMAND ----------
+
+# Constraint: id_cliente NOT NULL
+spark.sql(f"""
+    ALTER TABLE {GOLD}
+    ADD CONSTRAINT id_cliente_not_null
+    EXPECT (id_cliente IS NOT NULL)
+""")
+
+# Constraint: churn_risk IN ('Alto', 'Medio', 'Bajo')
+spark.sql(f"""
+    ALTER TABLE {GOLD}
+    ADD CONSTRAINT churn_risk_valido
+    EXPECT (churn_risk IN ('Alto', 'Medio', 'Bajo'))
+""")
+
+# Constraint: consumo_promedio_gb >= 0
+spark.sql(f"""
+    ALTER TABLE {GOLD}
+    ADD CONSTRAINT consumo_no_negativo
+    EXPECT (consumo_promedio_gb >= 0)
+""")
+
+# Constraint: upsell_flag IN (True, False)
+spark.sql(f"""
+    ALTER TABLE {GOLD}
+    ADD CONSTRAINT upsell_flag_booleano
+    EXPECT (upsell_flag IN (TRUE, FALSE))
+""")
+
+print("Constraints aplicados en cliente_360_churn_upsell")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 9. Validaciones de salida Gold (Quality Gate)
 # MAGIC
 # MAGIC - `id_cliente` no nulo y único.
 # MAGIC - `churn_risk` en {Alto, Medio, Bajo}.
@@ -264,26 +307,45 @@ print(f"Validaci ón | satisfacci ón fuera de 1-5={satisfaccion_invalida.count(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 9. Muestra de resultados
+# MAGIC ## 10. P5. Consulta SQL anal ítica
+# MAGIC
+# MAGIC Por segmento y ciudad:
+# MAGIC - Número de clientes en riesgo 'Alto'.
+# MAGIC - Promedio de satisfacci ón.
+# MAGIC Ordenado de mayor a menor riesgo.
 
 # COMMAND ----------
 
-display(
-    df_gold
-    .select(
-        "id_cliente",
-        "segmento",
-        "ciudad",
-        "producto_actual",
-        "consumo_promedio_gb",
-        "total_incidencias_red",
-        "promedio_incidencias_red",
-        "total_pqr",
-        "pqr_abiertos",
-        "satisfaccion_promedio",
-        "churn_risk",
-        "upsell_flag",
-    )
-    .orderBy(F.desc("churn_risk"), F.asc("id_cliente"))
-    .limit(20)
-)
+# MAGIC %sql
+# MAGIC SELECT
+# MAGIC     segmento,
+# MAGIC     ciudad,
+# MAGIC     COUNT(CASE WHEN churn_risk = 'Alto' THEN 1 END) AS clientes_riesgo_alto,
+# MAGIC     ROUND(AVG(satisfaccion_promedio), 2) AS satisfaccion_promedio
+# MAGIC FROM claro_postpago.l3_certified.cliente_360_churn_upsell
+# MAGIC GROUP BY segmento, ciudad
+# MAGIC ORDER BY clientes_riesgo_alto DESC, satisfaccion_promedio ASC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 11. P6. Estrategia de optimizaci ón (comentario)
+# MAGIC
+# MAGIC **Si `fact_uso_servicio` creciera a cientos de millones de registros:**
+# MAGIC
+# MAGIC 1. **Particionamiento:**
+# MAGIC    - Particionar por `periodo` (YYYY-MM), ya que es la columna más usada en filtros temporales e ingestas incrementales.
+# MAGIC    - Ejemplo: `PARTITION BY (periodo)`
+# MAGIC
+# MAGIC 2. **Z-ORDER:**
+# MAGIC    - Aplicar `OPTIMIZE ... ZORDER BY (id_cliente, id_producto)` para optimizar consultas que filtran por cliente y producto.
+# MAGIC    - Esto mejora el data skipping en Delta Lake.
+# MAGIC
+# MAGIC 3. **OPTIMIZE:**
+# MAGIC    - Ejecutar `OPTIMIZE fact_uso_servicio_silver` peri ódicamente para compactar archivos peque ños.
+# MAGIC
+# MAGIC 4. **No particionar por `id_cliente`:**
+# MAGIC    - Evitar particionar por columnas de alta cardinalidad como `id_cliente`, porque producir ía demasiados archivos peque ños.
+# MAGIC
+# MAGIC 5. **Incrementalidad:**
+# MAGIC    - En producci ón, usar Auto Loader o CDF (Change Data Feed) para procesar solo registros nuevos o modificados.

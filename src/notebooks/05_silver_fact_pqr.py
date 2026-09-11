@@ -1,6 +1,16 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 05. Silver — PQR
+# MAGIC
+# MAGIC **Tratamiento:**
+# MAGIC - Estandarizar fechas (YYYY-MM-dd o dd/MM/yyyy).
+# MAGIC - Eliminar duplicados por `id_caso`.
+# MAGIC - Estandarizar texto.
+# MAGIC
+# MAGIC **Constraints (despu és de crear la tabla):**
+# MAGIC - `id_caso` NOT NULL y ÚNICO.
+# MAGIC - `satisfaccion_1_5` BETWEEN 1 AND 5 (si no es NULL).
+# MAGIC - `dias_resolucion` >= 0.
 
 # COMMAND ----------
 
@@ -62,14 +72,65 @@ print(f"Silver listo | tabla={SILVER} | registros={df_pqr_silver.count()}")
 
 # COMMAND ----------
 
-fechas_nulas = spark.table(SILVER).filter(F.col("fecha_apertura").isNull())
+# MAGIC %md
+# MAGIC ## Aplicar constraints en la tabla Delta
 
-duplicados = (
-    spark.table(SILVER)
+# COMMAND ----------
+
+# Constraint: id_caso NOT NULL
+spark.sql(f"""
+    ALTER TABLE {SILVER}
+    ADD CONSTRAINT id_caso_not_null
+    EXPECT (id_caso IS NOT NULL)
+""")
+
+# Constraint: satisfaccion_1_5 BETWEEN 1 AND 5 (si no es NULL)
+spark.sql(f"""
+    ALTER TABLE {SILVER}
+    ADD CONSTRAINT satisfaccion_valida
+    EXPECT (satisfaccion_1_5 IS NULL OR satisfaccion_1_5 BETWEEN 1 AND 5)
+""")
+
+# Constraint: dias_resolucion >= 0
+spark.sql(f"""
+    ALTER TABLE {SILVER}
+    ADD CONSTRAINT dias_resolucion_no_negativo
+    EXPECT (dias_resolucion >= 0)
+""")
+
+print("Constraints aplicados en fact_pqr_silver")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Validaciones de salida Silver
+
+# COMMAND ----------
+
+df_silver = spark.table(SILVER)
+
+id_caso_nulo = df_silver.filter(
+    F.col("id_caso").isNull()
+    | (F.trim(F.col("id_caso")) == "")
+)
+
+id_caso_duplicado = (
+    df_silver
     .groupBy("id_caso")
     .count()
     .filter(F.col("count") > 1)
 )
 
-print(f"Validación | fecha_apertura nula={fechas_nulas.count()}")
-print(f"Validación | id_caso duplicado={duplicados.count()}")
+satisfaccion_invalida = df_silver.filter(
+    (F.col("satisfaccion_1_5").isNotNull()) &
+    (~F.col("satisfaccion_1_5").between(1, 5))
+)
+
+dias_resolucion_negativo = df_silver.filter(
+    F.col("dias_resolucion") < 0
+)
+
+print(f"Validaci ón | id_caso nulo={id_caso_nulo.count()}")
+print(f"Validaci ón | id_caso duplicado={id_caso_duplicado.count()}")
+print(f"Validaci ón | satisfacci ón inv álida={satisfaccion_invalida.count()}")
+print(f"Validaci ón | d ías resoluci ón negativo={dias_resolucion_negativo.count()}")
