@@ -2,17 +2,14 @@
 # MAGIC %md
 # MAGIC # 04. Silver — Uso de Servicio y Cuarentena
 # MAGIC
-# MAGIC **Tratamiento:**
-# MAGIC - Validar integridad referencial contra cliente y producto.
-# MAGIC - Validar rangos: consumo >= 0, dias_activo_mes 0-31, incidencias >= 0.
-# MAGIC - Validar formato de periodo (YYYY-MM).
-# MAGIC - Registros inv álidos → cuarentena con motivo de rechazo.
+# MAGIC **Tratamiento aplicado:**
+# MAGIC - Estandarizar llaves y tipos.
+# MAGIC - Validar integridad referencial contra clientes y productos Silver.
+# MAGIC - Validar consumo, días activos, incidencias y periodo.
+# MAGIC - Enviar registros inválidos a cuarentena.
 # MAGIC
-# MAGIC **Constraints (despu és de crear la tabla):**
-# MAGIC - `id_uso` NOT NULL y ÚNICO.
-# MAGIC - `consumo_datos_gb` >= 0.
-# MAGIC - `dias_activo_mes` BETWEEN 0 AND 31.
-# MAGIC - `incidencias_red` >= 0.
+# MAGIC Los registros válidos se publican en Silver. Los rechazados conservan
+# MAGIC datos originales, motivo de rechazo y metadatos de trazabilidad.
 
 # COMMAND ----------
 
@@ -74,6 +71,7 @@ df_validado = df_tipado.withColumn(
     "motivo_rechazo",
     F.concat_ws(
         " | ",
+        F.when(F.col("id_uso").isNull() | (F.trim(F.col("id_uso")) == ""), "ID_USO_NULO"),
         F.when(F.col("_cliente_existe").isNull(), "ID_CLIENTE_HUERFANO"),
         F.when(F.col("_producto_existe").isNull(), "ID_PRODUCTO_HUERFANO"),
         F.when(
@@ -110,6 +108,7 @@ df_uso_silver = (
     df_validado
     .filter(F.col("motivo_rechazo") == "")
     .drop("_cliente_existe", "_producto_existe", "motivo_rechazo")
+    .dropDuplicates(["id_uso"])
     .withColumn("_silver_run_id", F.lit(SILVER_RUN_ID))
     .withColumn("_silver_timestamp", F.current_timestamp())
 )
@@ -132,45 +131,8 @@ df_uso_silver = (
     .saveAsTable(SILVER)
 )
 
-print(f"Silver listo | tabla={SILVER} | v álidos={df_uso_silver.count()}")
+print(f"Silver listo | tabla={SILVER} | válidos={df_uso_silver.count()}")
 print(f"Cuarentena lista | tabla={CUARENTENA} | rechazados={df_rechazados.count()}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Aplicar constraints en la tabla Silver
-
-# COMMAND ----------
-
-# Constraint: id_uso NOT NULL
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT id_uso_not_null
-    EXPECT (id_uso IS NOT NULL)
-""")
-
-# Constraint: consumo_datos_gb >= 0
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT consumo_no_negativo
-    EXPECT (consumo_datos_gb >= 0)
-""")
-
-# Constraint: dias_activo_mes BETWEEN 0 AND 31
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT dias_activo_valido
-    EXPECT (dias_activo_mes BETWEEN 0 AND 31)
-""")
-
-# Constraint: incidencias_red >= 0
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT incidencias_no_negativas
-    EXPECT (incidencias_red >= 0)
-""")
-
-print("Constraints aplicados en fact_uso_servicio_silver")
 
 # COMMAND ----------
 
@@ -186,19 +148,35 @@ id_uso_nulo = df_silver.filter(
     | (F.trim(F.col("id_uso")) == "")
 )
 
-consumo_negativo = df_silver.filter(
-    F.col("consumo_datos_gb") < 0
+id_uso_duplicado = (
+    df_silver
+    .groupBy("id_uso")
+    .count()
+    .filter(F.col("count") > 1)
+)
+
+consumo_invalido = df_silver.filter(
+    F.col("consumo_datos_gb").isNull()
+    | (F.col("consumo_datos_gb") < 0)
 )
 
 dias_invalidos = df_silver.filter(
-    ~F.col("dias_activo_mes").between(0, 31)
+    F.col("dias_activo_mes").isNull()
+    | ~F.col("dias_activo_mes").between(0, 31)
 )
 
-incidencias_negativas = df_silver.filter(
-    F.col("incidencias_red") < 0
+incidencias_invalidas = df_silver.filter(
+    F.col("incidencias_red").isNull()
+    | (F.col("incidencias_red") < 0)
 )
 
-print(f"Validaci ón | id_uso nulo={id_uso_nulo.count()}")
-print(f"Validaci ón | consumo negativo={consumo_negativo.count()}")
-print(f"Validaci ón | d ías inv álidos={dias_invalidos.count()}")
-print(f"Validaci ón | incidencias negativas={incidencias_negativas.count()}")
+periodo_invalido = df_silver.filter(
+    ~F.col("periodo").rlike(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+)
+
+print(f"Validación | id_uso nulo={id_uso_nulo.count()}")
+print(f"Validación | id_uso duplicado={id_uso_duplicado.count()}")
+print(f"Validación | consumo nulo/negativo={consumo_invalido.count()}")
+print(f"Validación | días activos inválidos={dias_invalidos.count()}")
+print(f"Validación | incidencias inválidas={incidencias_invalidas.count()}")
+print(f"Validación | periodo inválido={periodo_invalido.count()}")

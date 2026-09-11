@@ -1,16 +1,17 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 03. Silver — Dimensi ón Producto
+# MAGIC # 03. Silver — Dimensión Producto
 # MAGIC
-# MAGIC **Tratamiento:**
+# MAGIC **Tratamiento aplicado:**
 # MAGIC - Eliminar duplicados exactos.
-# MAGIC - Extraer `capacidad_gb` desde `nombre_producto` (GB/MB).
-# MAGIC - Estandarizar texto.
+# MAGIC - Estandarizar texto y tipos.
+# MAGIC - Extraer `capacidad_gb` desde `nombre_producto`.
+# MAGIC - Convertir MB a GB cuando corresponda.
 # MAGIC
-# MAGIC **Constraints (despu és de crear la tabla):**
-# MAGIC - `id_producto` NOT NULL y ÚNICO.
-# MAGIC - `valor_mensual` >= 0.
-# MAGIC - `vigente` IN (True, False).
+# MAGIC **Validaciones de calidad:**
+# MAGIC - `id_producto` no nulo y sin duplicados.
+# MAGIC - `valor_mensual` no negativo.
+# MAGIC - Productos sin capacidad identificable se reportan para revisión.
 
 # COMMAND ----------
 
@@ -25,15 +26,32 @@ SILVER_RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 # COMMAND ----------
 
 def limpiar_texto(columna):
-    return F.initcap(F.regexp_replace(F.trim(F.col(columna)), r"\s+", " "))
+    return F.initcap(
+        F.regexp_replace(
+            F.trim(F.col(columna)),
+            r"\s+",
+            " "
+        )
+    )
 
 def texto_mayusculas(columna):
-    return F.upper(F.regexp_replace(F.trim(F.col(columna)), r"\s+", " "))
+    return F.upper(
+        F.regexp_replace(
+            F.trim(F.col(columna)),
+            r"\s+",
+            " "
+        )
+    )
 
 # COMMAND ----------
 
 df_bronze = spark.table(BRONZE)
-columnas_origen = [c for c in df_bronze.columns if not c.startswith("_")]
+
+columnas_origen = [
+    columna
+    for columna in df_bronze.columns
+    if not columna.startswith("_")
+]
 
 capacidad_valor = F.regexp_extract(
     F.upper(F.col("nombre_producto")),
@@ -65,7 +83,9 @@ df_producto_silver = (
         ).when(
             capacidad_unidad == "MB",
             capacidad_valor.cast("double") / F.lit(1024.0),
-        ).otherwise(F.lit(None).cast("double")).alias("capacidad_gb"),
+        ).otherwise(
+            F.lit(None).cast("double")
+        ).alias("capacidad_gb"),
         F.col("_source_file"),
         F.col("_ingestion_timestamp"),
         F.col("_pipeline_run_id"),
@@ -93,36 +113,6 @@ print(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Aplicar constraints en la tabla Delta
-
-# COMMAND ----------
-
-# Constraint: id_producto NOT NULL
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT id_producto_not_null
-    EXPECT (id_producto IS NOT NULL)
-""")
-
-# Constraint: valor_mensual >= 0
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT valor_mensual_no_negativo
-    EXPECT (valor_mensual >= 0)
-""")
-
-# Constraint: vigente IN (True, False)
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT vigente_booleano
-    EXPECT (vigente IN (TRUE, FALSE))
-""")
-
-print("Constraints aplicados en dim_producto_silver")
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## Validaciones de salida Silver
 
 # COMMAND ----------
@@ -141,10 +131,16 @@ id_producto_duplicado = (
     .filter(F.col("count") > 1)
 )
 
-valor_mensual_negativo = df_silver.filter(
-    F.col("valor_mensual") < 0
+valor_mensual_invalido = df_silver.filter(
+    F.col("valor_mensual").isNull()
+    | (F.col("valor_mensual") < 0)
 )
 
-print(f"Validaci ón | id_producto nulo={id_producto_nulo.count()}")
-print(f"Validaci ón | id_producto duplicado={id_producto_duplicado.count()}")
-print(f"Validaci ón | valor_mensual negativo={valor_mensual_negativo.count()}")
+productos_sin_capacidad = df_silver.filter(
+    F.col("capacidad_gb").isNull()
+)
+
+print(f"Validación | id_producto nulo={id_producto_nulo.count()}")
+print(f"Validación | id_producto duplicado={id_producto_duplicado.count()}")
+print(f"Validación | valor_mensual nulo/negativo={valor_mensual_invalido.count()}")
+print(f"Validación | capacidad_gb no identificada={productos_sin_capacidad.count()}")

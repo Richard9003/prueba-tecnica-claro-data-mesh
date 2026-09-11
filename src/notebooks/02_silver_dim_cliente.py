@@ -1,16 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 02. Silver — Dimensi ón Cliente
+# MAGIC # 02. Silver — Dimensión Cliente
 # MAGIC
-# MAGIC **Tratamiento:**
+# MAGIC **Tratamiento aplicado:**
 # MAGIC - Eliminar duplicados exactos.
-# MAGIC - Estrato nulo: imputar mediana global de estratos v álidos.
-# MAGIC - Ciudad nula/vac ía: `No informado`.
-# MAGIC - Conservar trazabilidad de la imputaci ón.
+# MAGIC - Estrato nulo: imputar mediana global de estratos válidos.
+# MAGIC - Ciudad nula/vacía: `No informado`.
+# MAGIC - Estandarizar tipos, texto y fecha.
+# MAGIC - Conservar metadatos de trazabilidad.
 # MAGIC
-# MAGIC **Constraints (despu és de crear la tabla):**
-# MAGIC - `id_cliente` NOT NULL y ÚNICO.
-# MAGIC - `estrato` BETWEEN 1 AND 6.
+# MAGIC **Validaciones de calidad:**
+# MAGIC - `id_cliente` no nulo y sin duplicados.
+# MAGIC - `estrato` entre 1 y 6.
+# MAGIC - `ciudad` no nula/vacía después del tratamiento.
 
 # COMMAND ----------
 
@@ -54,8 +56,6 @@ columnas_origen = [
 
 df_sin_duplicados = df_bronze.dropDuplicates(columnas_origen)
 
-# El CSV representa estrato como texto decimal: "1.0", "2.0", etc.
-# Se convierte primero a DOUBLE y despu és a INT.
 estrato_tipado = F.expr("try_cast(estrato AS DOUBLE)")
 
 estratos_validos = (
@@ -124,32 +124,6 @@ print(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Aplicar constraints en la tabla Delta
-
-# COMMAND ----------
-
-# Constraint: id_cliente NOT NULL
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT id_cliente_not_null
-    EXPECT (id_cliente IS NOT NULL)
-""")
-
-# Constraint: id_cliente ÚNICO (se valida con COUNT DISTINCT = COUNT)
-# Nota: Delta no soporta UNIQUE constraint directamente, se valida con query de calidad.
-
-# Constraint: estrato BETWEEN 1 AND 6
-spark.sql(f"""
-    ALTER TABLE {SILVER}
-    ADD CONSTRAINT estrato_valido
-    EXPECT (estrato BETWEEN 1 AND 6)
-""")
-
-print("Constraints aplicados en dim_cliente_silver")
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## Validaciones de salida Silver
 
 # COMMAND ----------
@@ -177,7 +151,7 @@ ciudad_nula = df_silver.filter(
     | (F.trim(F.col("ciudad")) == "")
 )
 
-print(f"Validaci ón | id_cliente nulo={id_cliente_nulo.count()}")
-print(f"Validaci ón | id_cliente duplicado={id_cliente_duplicado.count()}")
-print(f"Validaci ón | estrato fuera de 1-6={estrato_invalido.count()}")
-print(f"Validaci ón | ciudad nula/vac ía={ciudad_nula.count()}")
+print(f"Validación | id_cliente nulo={id_cliente_nulo.count()}")
+print(f"Validación | id_cliente duplicado={id_cliente_duplicado.count()}")
+print(f"Validación | estrato fuera de 1-6={estrato_invalido.count()}")
+print(f"Validación | ciudad nula/vacía={ciudad_nula.count()}")

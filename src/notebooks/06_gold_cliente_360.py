@@ -2,26 +2,16 @@
 # MAGIC %md
 # MAGIC # 06. Gold — Cliente 360 (Churn + Upsell)
 # MAGIC
-# MAGIC **Caso:** Cliente 360 — Riesgo de Churn y Oportunidad de Upsell  
-# MAGIC **Alcance:** P3 (modelo Gold), P4 (reglas de negocio), P5 (consulta SQL), P6 (optimizaci ón).
+# MAGIC **Alcance:**
+# MAGIC - P3: modelo Gold certificado.
+# MAGIC - P4: reglas `churn_risk` y `upsell_flag`.
+# MAGIC - P5: consulta SQL analítica.
+# MAGIC - P6: estrategia de optimización.
 # MAGIC
-# MAGIC **Columnas requeridas (P3):**
-# MAGIC - `id_cliente`, `segmento`, `ciudad`
-# MAGIC - `producto_actual`
-# MAGIC - `consumo_promedio_gb`
-# MAGIC - `total_incidencias_red`
-# MAGIC - `total_pqr`, `pqr_abiertos`
-# MAGIC - `satisfaccion_promedio`
+# MAGIC **Grano:** un registro por cliente activo.
 # MAGIC
-# MAGIC **Reglas de negocio (P4):**
-# MAGIC - `churn_risk`: Alto / Medio / Bajo
-# MAGIC - `upsell_flag`: True / False
-# MAGIC
-# MAGIC **Constraints (despu és de crear la tabla):**
-# MAGIC - `id_cliente` NOT NULL y ÚNICO.
-# MAGIC - `churn_risk` IN ('Alto', 'Medio', 'Bajo').
-# MAGIC - `consumo_promedio_gb` >= 0.
-# MAGIC - `upsell_flag` IN (True, False).
+# MAGIC Se agregan Uso y PQR por separado antes de unirlos a Cliente.
+# MAGIC Esto evita multiplicación de filas y métricas incorrectas.
 
 # COMMAND ----------
 
@@ -37,45 +27,54 @@ USO_SILVER = f"{CATALOGO}.l2_curated.fact_uso_servicio_silver"
 PQR_SILVER = f"{CATALOGO}.l2_curated.fact_pqr_silver"
 
 GOLD = f"{CATALOGO}.l3_certified.cliente_360_churn_upsell"
-
 GOLD_RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Fecha de corte (reproducible)
+# MAGIC ## Fecha de corte para PQR
 # MAGIC
-# MAGIC Usamos la máxima fecha de apertura en PQR como referencia para " últimos 4 meses".
+# MAGIC Se usa la máxima fecha disponible en PQR, no la fecha del sistema.
+# MAGIC Así la regla de "últimos 4 meses" es reproducible.
 
 # COMMAND ----------
 
 df_pqr = spark.table(PQR_SILVER)
+df_uso = spark.table(USO_SILVER)
+df_productos = spark.table(PRODUCTOS_SILVER)
 
-fecha_corte_row = df_pqr.agg(F.max("fecha_apertura").alias("fecha_corte")).first()
-FECHA_CORTE = fecha_corte_row["fecha_corte"]
+fecha_corte = (
+    df_pqr
+    .agg(F.max("fecha_apertura").alias("fecha_corte"))
+    .first()["fecha_corte"]
+)
 
-print(f"Fecha de corte para últimos 4 meses: {FECHA_CORTE}")
+if fecha_corte is None:
+    raise ValueError("No es posible construir Gold: fact_pqr_silver no tiene fecha_apertura válida.")
+
+fecha_inicio_4_meses = (
+    spark
+    .range(1)
+    .select(F.add_months(F.lit(fecha_corte), -4).alias("fecha_inicio"))
+    .first()["fecha_inicio"]
+)
+
+print(f"Fecha de corte PQR: {fecha_corte}")
+print(f"Inicio ventana últimos 4 meses: {fecha_inicio_4_meses}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Agregados de uso por cliente
-# MAGIC
-# MAGIC - `consumo_promedio_gb`: promedio de `consumo_datos_gb`.
-# MAGIC - `total_incidencias_red`: suma de `incidencias_red`.
-# MAGIC - `promedio_incidencias_red`: promedio de `incidencias_red` (para churn_risk).
-# MAGIC - `ultimo_periodo_uso`: máximo periodo (para producto actual).
+# MAGIC ## Agregados de uso por cliente
 
 # COMMAND ----------
-
-df_uso = spark.table(USO_SILVER)
 
 uso_por_cliente = (
     df_uso
     .groupBy("id_cliente")
     .agg(
         F.avg("consumo_datos_gb").alias("consumo_promedio_gb"),
-        F.sum("incidencias_red").alias("total_incidencias_red"),
+        F.sum("incidencias_red").cast("long").alias("total_incidencias_red"),
         F.avg("incidencias_red").alias("promedio_incidencias_red"),
         F.max("periodo").alias("ultimo_periodo_uso"),
     )
@@ -84,19 +83,24 @@ uso_por_cliente = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Producto actual por cliente
+# MAGIC ## Producto actual por cliente
 # MAGIC
-# MAGIC Tomamos el producto asociado al último periodo de uso válido.
-# MAGIC Si hay múltiples productos en el mismo periodo, tomamos el primero por `id_producto`.
+# MAGIC Producto asociado al último periodo válido de uso.
+# MAGIC Si hay más de un producto en el mismo periodo, se selecciona el menor
+# MAGIC `id_producto` para que la elección sea determinista.
 
 # COMMAND ----------
 
-ventana_producto = Window.partitionBy("id_cliente").orderBy(F.desc("periodo"), F.asc("id_producto"))
+ventana_producto_actual = (
+    Window
+    .partitionBy("id_cliente")
+    .orderBy(F.desc("periodo"), F.asc("id_producto"))
+)
 
 producto_actual_por_cliente = (
     df_uso
     .join(
-        spark.table(PRODUCTOS_SILVER).select(
+        df_productos.select(
             "id_producto",
             F.col("nombre_producto").alias("producto_actual"),
             "capacidad_gb",
@@ -104,105 +108,108 @@ producto_actual_por_cliente = (
         "id_producto",
         "left",
     )
-    .withColumn("rn", F.row_number().over(ventana_producto))
-    .filter(F.col("rn") == 1)
+    .withColumn("_rn_producto_actual", F.row_number().over(ventana_producto_actual))
+    .filter(F.col("_rn_producto_actual") == 1)
     .select("id_cliente", "producto_actual", "capacidad_gb")
 )
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Agregados de PQR por cliente
-# MAGIC
-# MAGIC - `total_pqr`: total de casos.
-# MAGIC - `pqr_abiertos`: casos con `estado_caso = 'Abierto'`.
-# MAGIC - `satisfaccion_promedio`: promedio de `satisfaccion_1_5`.
-# MAGIC - `pqr_queja_reclamo_ult4m`: PQR de tipo Queja/Reclamo en últimos 4 meses.
+# MAGIC ## Agregados de PQR por cliente
 
 # COMMAND ----------
-
-from pyspark.sql.functions import expr
 
 pqr_por_cliente = (
     df_pqr
     .groupBy("id_cliente")
     .agg(
-        F.count("*").alias("total_pqr"),
-        F.sum(F.when(F.col("estado_caso") == "Abierto", 1).otherwise(0)).alias("pqr_abiertos"),
+        F.count("*").cast("long").alias("total_pqr"),
+        F.sum(
+            F.when(F.col("estado_caso") == "Abierto", 1).otherwise(0)
+        ).cast("long").alias("pqr_abiertos"),
         F.avg("satisfaccion_1_5").alias("satisfaccion_promedio"),
         F.sum(
             F.when(
-                (F.col("tipo_caso").isin("Queja", "Reclamo")) &
-                (F.col("fecha_apertura") >= expr(f"add_months('{FECHA_CORTE}', -4)")),
-                1
+                F.col("tipo_caso").isin("Queja", "Reclamo")
+                & (F.col("fecha_apertura") >= F.lit(fecha_inicio_4_meses)),
+                1,
             ).otherwise(0)
-        ).alias("pqr_queja_reclamo_ult4m"),
+        ).cast("long").alias("pqr_queja_reclamo_ult4m"),
     )
 )
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Construir Gold (solo clientes activos)
+# MAGIC ## Construcción Gold y reglas de negocio
 # MAGIC
-# MAGIC Columnas mínimas requeridas (P3):
-# MAGIC - `id_cliente`, `segmento`, `ciudad`
-# MAGIC - `producto_actual`
-# MAGIC - `consumo_promedio_gb`
-# MAGIC - `total_incidencias_red`
-# MAGIC - `total_pqr`, `pqr_abiertos`
-# MAGIC - `satisfaccion_promedio`
+# MAGIC **Churn Alto:** >=2 PQR Queja/Reclamo últimos 4 meses O promedio incidencias >=3.
+# MAGIC
+# MAGIC **Churn Medio:** 1 PQR Queja/Reclamo últimos 4 meses O promedio incidencias >=1 y <3.
+# MAGIC
+# MAGIC **Upsell:** consumo promedio > 1.80 × capacidad del plan.
 
 # COMMAND ----------
 
-df_clientes = spark.table(CLIENTES_SILVER).filter(F.col("estado_cliente") == "Activo")
-
-gold_cliente_360 = (
-    df_clientes
+df_clientes_activos = (
+    spark.table(CLIENTES_SILVER)
+    .filter(F.col("estado_cliente") == "Activo")
     .select("id_cliente", "segmento", "ciudad")
+)
+
+df_gold_previo = (
+    df_clientes_activos
     .join(producto_actual_por_cliente, "id_cliente", "left")
     .join(uso_por_cliente, "id_cliente", "left")
     .join(pqr_por_cliente, "id_cliente", "left")
-    .fillna(0, subset=["total_incidencias_red", "total_pqr", "pqr_abiertos", "pqr_queja_reclamo_ult4m"])
-    .fillna(0.0, subset=["consumo_promedio_gb", "promedio_incidencias_red", "satisfaccion_promedio"])
+    .fillna(
+        0,
+        subset=[
+            "total_incidencias_red",
+            "total_pqr",
+            "pqr_abiertos",
+            "pqr_queja_reclamo_ult4m",
+        ],
+    )
+    .fillna(
+        0.0,
+        subset=[
+            "consumo_promedio_gb",
+            "promedio_incidencias_red",
+        ],
+    )
 )
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 6. Reglas de negocio: churn_risk y upsell_flag (P4)
-# MAGIC
-# MAGIC **churn_risk:**
-# MAGIC - **Alto**: `pqr_queja_reclamo_ult4m >= 2` **o** `promedio_incidencias_red >= 3`
-# MAGIC - **Medio**: `pqr_queja_reclamo_ult4m == 1` **o** `promedio_incidencias_red` entre 1 y 3
-# MAGIC - **Bajo**: otro caso
-# MAGIC
-# MAGIC **upsell_flag:**
-# MAGIC - **True**: `consumo_promedio_gb > capacidad_gb * 1.80` (80% por encima de la capacidad)
-# MAGIC - **False**: otro caso (incluye `capacidad_gb` NULL)
-
-# COMMAND ----------
-
-gold_con_reglas = (
-    gold_cliente_360
+df_gold = (
+    df_gold_previo
     .withColumn(
         "churn_risk",
         F.when(
-            (F.col("pqr_queja_reclamo_ult4m") >= 2) | (F.col("promedio_incidencias_red") >= 3),
-            "Alto"
-        ).when(
-            (F.col("pqr_queja_reclamo_ult4m") == 1) |
-            ((F.col("promedio_incidencias_red") >= 1) & (F.col("promedio_incidencias_red") < 3)),
-            "Medio"
-        ).otherwise("Bajo"),
+            (F.col("pqr_queja_reclamo_ult4m") >= 2)
+            | (F.col("promedio_incidencias_red") >= 3),
+            F.lit("Alto"),
+        )
+        .when(
+            (F.col("pqr_queja_reclamo_ult4m") == 1)
+            | (
+                (F.col("promedio_incidencias_red") >= 1)
+                & (F.col("promedio_incidencias_red") < 3)
+            ),
+            F.lit("Medio"),
+        )
+        .otherwise(F.lit("Bajo")),
     )
     .withColumn(
         "upsell_flag",
         F.when(
-            (F.col("capacidad_gb").isNotNull()) &
-            (F.col("consumo_promedio_gb") > F.col("capacidad_gb") * F.lit(1.80)),
-            True
-        ).otherwise(False),
+            F.col("capacidad_gb").isNotNull()
+            & (
+                F.col("consumo_promedio_gb")
+                > (F.col("capacidad_gb") * F.lit(1.80))
+            ),
+            F.lit(True),
+        ).otherwise(F.lit(False)),
     )
     .withColumn("fecha_actualizacion", F.current_timestamp())
     .withColumn("_gold_run_id", F.lit(GOLD_RUN_ID))
@@ -211,108 +218,80 @@ gold_con_reglas = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 7. Guardar tabla Gold
+# MAGIC ## Quality Gate antes de certificar Gold
+# MAGIC
+# MAGIC Si falla una regla crítica, el pipeline se detiene antes de publicar.
+
+# COMMAND ----------
+
+validaciones_criticas = {
+    "gold_vacio": df_gold.limit(1).count() == 0,
+    "id_cliente_nulo": df_gold.filter(
+        F.col("id_cliente").isNull() | (F.trim(F.col("id_cliente")) == "")
+    ).limit(1).count() > 0,
+    "id_cliente_duplicado": (
+        df_gold
+        .groupBy("id_cliente")
+        .count()
+        .filter(F.col("count") > 1)
+        .limit(1)
+        .count() > 0
+    ),
+    "churn_risk_invalido": df_gold.filter(
+        ~F.col("churn_risk").isin("Alto", "Medio", "Bajo")
+    ).limit(1).count() > 0,
+    "consumo_negativo": df_gold.filter(
+        F.col("consumo_promedio_gb") < 0
+    ).limit(1).count() > 0,
+    "pqr_abiertos_mayor_total": df_gold.filter(
+        F.col("pqr_abiertos") > F.col("total_pqr")
+    ).limit(1).count() > 0,
+}
+
+fallos_criticos = [
+    nombre_regla
+    for nombre_regla, fallo
+    in validaciones_criticas.items()
+    if fallo
+]
+
+if fallos_criticos:
+    raise ValueError(
+        "Quality Gate falló. Gold no se publica. "
+        f"Reglas incumplidas: {', '.join(fallos_criticos)}"
+    )
+
+print("Quality Gate aprobado | todas las reglas críticas cumplen.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Publicación Gold
 
 # COMMAND ----------
 
 (
-    gold_con_reglas.write
+    df_gold.write
     .format("delta")
     .mode("overwrite")
     .option("overwriteSchema", "true")
     .saveAsTable(GOLD)
 )
 
-print(f"Gold listo | tabla={GOLD} | registros={gold_con_reglas.count()} | run_id={GOLD_RUN_ID}")
+print(
+    f"Gold certificado | tabla={GOLD} | "
+    f"registros={df_gold.count()} | run_id={GOLD_RUN_ID}"
+)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 8. Aplicar constraints en la tabla Delta
-
-# COMMAND ----------
-
-# Constraint: id_cliente NOT NULL
-spark.sql(f"""
-    ALTER TABLE {GOLD}
-    ADD CONSTRAINT id_cliente_not_null
-    EXPECT (id_cliente IS NOT NULL)
-""")
-
-# Constraint: churn_risk IN ('Alto', 'Medio', 'Bajo')
-spark.sql(f"""
-    ALTER TABLE {GOLD}
-    ADD CONSTRAINT churn_risk_valido
-    EXPECT (churn_risk IN ('Alto', 'Medio', 'Bajo'))
-""")
-
-# Constraint: consumo_promedio_gb >= 0
-spark.sql(f"""
-    ALTER TABLE {GOLD}
-    ADD CONSTRAINT consumo_no_negativo
-    EXPECT (consumo_promedio_gb >= 0)
-""")
-
-# Constraint: upsell_flag IN (True, False)
-spark.sql(f"""
-    ALTER TABLE {GOLD}
-    ADD CONSTRAINT upsell_flag_booleano
-    EXPECT (upsell_flag IN (TRUE, FALSE))
-""")
-
-print("Constraints aplicados en cliente_360_churn_upsell")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 9. Validaciones de salida Gold (Quality Gate)
+# MAGIC ## P5. Consulta SQL analítica
 # MAGIC
-# MAGIC - `id_cliente` no nulo y único.
-# MAGIC - `churn_risk` en {Alto, Medio, Bajo}.
-# MAGIC - `consumo_promedio_gb` no negativo.
-# MAGIC - `satisfaccion_promedio` entre 1 y 5 (si no es NULL).
-
-# COMMAND ----------
-
-df_gold = spark.table(GOLD)
-
-id_cliente_nulo = df_gold.filter(
-    F.col("id_cliente").isNull() | (F.trim(F.col("id_cliente")) == "")
-)
-
-id_cliente_duplicado = (
-    df_gold
-    .groupBy("id_cliente")
-    .count()
-    .filter(F.col("count") > 1)
-)
-
-churn_risk_invalido = df_gold.filter(
-    ~F.col("churn_risk").isin("Alto", "Medio", "Bajo")
-)
-
-consumo_negativo = df_gold.filter(F.col("consumo_promedio_gb") < 0)
-
-satisfaccion_invalida = df_gold.filter(
-    (F.col("satisfaccion_promedio").isNotNull()) &
-    (~F.col("satisfaccion_promedio").between(1, 5))
-)
-
-print(f"Validaci ón | id_cliente nulo={id_cliente_nulo.count()}")
-print(f"Validaci ón | id_cliente duplicado={id_cliente_duplicado.count()}")
-print(f"Validaci ón | churn_risk inv álido={churn_risk_invalido.count()}")
-print(f"Validaci ón | consumo negativo={consumo_negativo.count()}")
-print(f"Validaci ón | satisfacci ón fuera de 1-5={satisfaccion_invalida.count()}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 10. P5. Consulta SQL anal ítica
-# MAGIC
-# MAGIC Por segmento y ciudad:
-# MAGIC - Número de clientes en riesgo 'Alto'.
-# MAGIC - Promedio de satisfacci ón.
-# MAGIC Ordenado de mayor a menor riesgo.
+# MAGIC Devuelve por segmento y ciudad:
+# MAGIC - Clientes en riesgo Alto.
+# MAGIC - Promedio de satisfacción.
+# MAGIC - Orden descendente de riesgo Alto.
 
 # COMMAND ----------
 
@@ -329,23 +308,12 @@ print(f"Validaci ón | satisfacci ón fuera de 1-5={satisfaccion_invalida.count(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 11. P6. Estrategia de optimizaci ón (comentario)
+# MAGIC ## P6. Estrategia de optimización
 # MAGIC
-# MAGIC **Si `fact_uso_servicio` creciera a cientos de millones de registros:**
+# MAGIC Si `fact_uso_servicio` creciera a cientos de millones de registros:
 # MAGIC
-# MAGIC 1. **Particionamiento:**
-# MAGIC    - Particionar por `periodo` (YYYY-MM), ya que es la columna más usada en filtros temporales e ingestas incrementales.
-# MAGIC    - Ejemplo: `PARTITION BY (periodo)`
-# MAGIC
-# MAGIC 2. **Z-ORDER:**
-# MAGIC    - Aplicar `OPTIMIZE ... ZORDER BY (id_cliente, id_producto)` para optimizar consultas que filtran por cliente y producto.
-# MAGIC    - Esto mejora el data skipping en Delta Lake.
-# MAGIC
-# MAGIC 3. **OPTIMIZE:**
-# MAGIC    - Ejecutar `OPTIMIZE fact_uso_servicio_silver` peri ódicamente para compactar archivos peque ños.
-# MAGIC
-# MAGIC 4. **No particionar por `id_cliente`:**
-# MAGIC    - Evitar particionar por columnas de alta cardinalidad como `id_cliente`, porque producir ía demasiados archivos peque ños.
-# MAGIC
-# MAGIC 5. **Incrementalidad:**
-# MAGIC    - En producci ón, usar Auto Loader o CDF (Change Data Feed) para procesar solo registros nuevos o modificados.
+# MAGIC - Particionar por `periodo`, porque es apropiado para filtros temporales e ingestas incrementales.
+# MAGIC - No particionar por `id_cliente`, porque es de alta cardinalidad y genera archivos pequeños.
+# MAGIC - Aplicar `OPTIMIZE` periódico para compactar archivos Delta.
+# MAGIC - Aplicar `ZORDER BY (id_cliente, id_producto)` si las consultas filtran frecuentemente por esos atributos.
+# MAGIC - Para cargas incrementales, usar Auto Loader o Change Data Feed según el patrón de cambios disponible.
