@@ -2,179 +2,128 @@
 
 ## Alcance
 
-Este documento responde P6 y describe la evolución de la solución batch de la prueba hacia un pipeline escalable, gobernado y desplegable entre desarrollo, pruebas y producción.
-
-## Tabla objetivo: fact_uso_servicio
-
-La tabla `fact_uso_servicio_silver` puede crecer a cientos de millones de registros y normalmente se consultará por ventanas temporales, cliente y producto.
-
-## Diseño de almacenamiento y rendimiento
-
-### 1. Delta Lake
-
-Persistir Bronze, Silver, cuarentena y Gold en Delta Lake para disponer de transacciones ACID, control de versiones, lecturas consistentes y operaciones de actualización con `MERGE`.
-
-### 2. Liquid Clustering (recomendado para producción)
-
-Usar Liquid Clustering sobre `fact_uso_servicio_silver` con claves candidatas:
-
-```sql
-CLUSTER BY (periodo, id_cliente, id_producto)
-```
-
-Motivo:
-
-- `periodo` concentra los filtros temporales y las cargas incrementales.
-- `id_cliente` e `id_producto` son filtros y claves frecuentes de joins.
-- Liquid Clustering adapta la organización física de los datos a cambios en los patrones de consulta, evitando administrar particiones estáticas de forma manual.
-- Es preferible cuando el volumen, las consultas y la cardinalidad pueden evolucionar.
-
-Liquid Clustering debe validarse en el workspace/edición antes de adoptarse, porque su disponibilidad depende de la versión y configuración de Databricks.
-
-Desde Databricks Runtime 15.4 existe además la variante automática (`CLUSTER BY AUTO`), donde es Databricks quien decide las llaves de clustering revisando el historial real de consultas, en vez de que uno las fije a mano. Las tres columnas de arriba son una hipótesis razonable con la información que tenemos hoy —uso por periodo, cliente y producto—, pero si en producción el patrón de consumo termina siendo otro (por ejemplo, si Mercadeo Digital filtra casi siempre por segmento en vez de por producto), tiene más sentido dejar que se ajuste solo que reabrir esta discusión cada semestre:
-
-```sql
-ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
-CLUSTER BY AUTO;
-```
-
-`CLUSTER BY AUTO` necesita Predictive Optimization habilitado en la tabla. Y ya que se toca el tema: Predictive Optimization es básicamente lo que hace innecesario programar `OPTIMIZE`, `VACUUM` y `ANALYZE` como jobs de mantenimiento aparte, porque Databricks los dispara solo según qué tan seguido se lee y se escribe la tabla. En cuentas de Unity Catalog creadas después de noviembre de 2024 viene activado por defecto; si no, se activa así:
-
-```sql
-ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
-SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true');
-```
-
-Un detalle que conviene dejar anotado para no llevarse una sorpresa: con Predictive Optimization activo, el `OPTIMIZE` automático compacta y respeta Liquid Clustering, pero no corre `ZORDER`. Si en cambio se sigue el camino sin Liquid Clustering (la alternativa del punto siguiente), el `ZORDER` hay que seguirlo programando aparte, no se hereda gratis.
-
-Y si más adelante cambian las llaves de clustering, o hace falta reorganizar toda la tabla y no solo lo que se escribió recientemente, en DBR 16+ existe `OPTIMIZE ... FULL` para forzar el reclustering completo:
-
-```sql
-OPTIMIZE claro_postpago.l2_curated.fact_uso_servicio_silver FULL;
-```
-
-Nada de esto aplica todavía a la tabla de la prueba —con ~50 registros no hay nada que Liquid Clustering o Predictive Optimization puedan optimizar—, pero es de las cosas que conviene activar desde el primer despliegue real y no después, cuando ya hay millones de archivos pequeños que reorganizar.
-
-### 3. Alternativa si Liquid Clustering no está disponible
-
-Particionar por `periodo` y aplicar mantenimiento Delta:
-
-```sql
-OPTIMIZE claro_postpago.l2_curated.fact_uso_servicio_silver
-ZORDER BY (id_cliente, id_producto);
-```
-
-Criterios:
-
-- Particionar por `periodo` porque es una dimensión temporal de cardinalidad controlada.
-- No particionar por `id_cliente`: tiene alta cardinalidad y generaría demasiadas particiones y archivos pequeños.
-- Usar `ZORDER` por `id_cliente` e `id_producto` cuando los consumidores filtren frecuentemente por esas columnas.
-- Ejecutar `OPTIMIZE` según volumen, frecuencia de escritura y tamaño de archivos; no de manera indiscriminada.
-
-### 4. Tamaño de archivo y limpieza
-
-Desde DBR 10.4, optimized writes y auto compaction ya vienen activados por defecto para `MERGE`/`UPDATE`/`DELETE`, y en tablas administradas por Unity Catalog Databricks ajusta el tamaño de archivo automáticamente. No hay que tocar nada ahí salvo que ese tamaño automático no encaje con el storage subyacente, en cuyo caso se puede fijar un objetivo explícito:
-
-```sql
-ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
-SET TBLPROPERTIES ('delta.targetFileSize' = '128mb');
-```
-
-Lo que sí conviene decidir aparte es la política de `VACUUM`. `OPTIMIZE` compacta pero no borra los archivos viejos; eso lo hace `VACUUM`, y con Predictive Optimization también se dispara solo. El punto es no dejar el período de retención en el default (7 días) sin pensarlo, sino fijarlo según cuánto time travel o auditoría necesite el dominio:
-
-```sql
-VACUUM claro_postpago.l2_curated.fact_uso_servicio_silver RETAIN 168 HOURS;
-```
-
-## Idempotencia e incrementalidad
-
-La prueba implementa una carga batch completa, reproducible e idempotente por resultado mediante reconstrucción determinista desde Bronze y `overwrite` de las tablas derivadas.
-
-Para producción:
-
-1. Aterrizar cada archivo en una ruta inmutable identificada por fecha y `batch_id`.
-2. Registrar en una tabla de control: nombre/ruta de archivo, hash, tamaño, fecha de llegada, `batch_id`, estado, conteos leídos/válidos/rechazados y versión de pipeline.
-3. Rechazar o ignorar archivos ya procesados mediante combinación de `source_file_hash` y entidad.
-4. Usar `MERGE` sobre tablas Delta con llaves de negocio:
-   - Cliente: `id_cliente`.
-   - Producto: `id_producto`.
-   - Uso: `id_uso`.
-   - PQR: `id_caso`.
-
-   Aquí conviene habilitar Deletion Vectors sobre las tablas que reciban `MERGE` incremental. Sin ellos, cada actualización reescribe el archivo completo aunque solo cambien unas pocas filas, y sobre cientos de millones de registros eso empieza a costar tiempo y cómputo de más:
-
-   ```sql
-   ALTER TABLE claro_postpago.l2_curated.fact_uso_servicio_silver
-   SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true');
-   ```
-
-5. Deduplicar el origen antes de `MERGE`, asegurando una fila por llave; esto evita coincidencias múltiples y resultados no deterministas.
-6. Mantener watermark batch por periodo/fecha de evento o por lote procesado para limitar el procesamiento a cambios nuevos.
-7. Recalcular Gold solo para clientes impactados cuando el volumen lo justifique.
-
-## Calidad y observabilidad
-
-- Bronze conserva el archivo original y metadatos de ingesta; no corrige datos.
-- Silver normaliza, tipa, aplica reglas y envía errores a cuarentena.
-- Gold ejecuta un quality gate antes de certificarse.
-- Registrar métricas por ejecución: registros leídos, válidos, rechazados, porcentaje de rechazo, frescura, duplicados e incumplimientos por regla.
-- Alertar al Data Product Owner cuando falle una regla crítica, el SLA o el umbral de calidad.
-
-## Orquestación y concurrencia
-
-Para producción, orquestar con Databricks Jobs/Lakeflow Jobs mediante tareas dependientes:
+La solución actual es un pipeline batch reproducible para el dominio Postpago Residencial. Su flujo es:
 
 ```text
-Bronze
-  ├── Silver Cliente
-  ├── Silver Producto
-  ├── Silver Uso + Cuarentena
-  └── Silver PQR
-          ↓
-       Gold + Quality Gate
-          ↓
-       Analítica / consumo
+CSV → Bronze Delta → Silver → Gold + Quality Gate → Analítica
 ```
 
-- Ejecutar Silver Cliente y Silver Producto antes de Silver Uso.
-- Ejecutar Gold solo cuando todas las tablas Silver requeridas finalicen correctamente.
-- Limitar la concurrencia del pipeline del producto a una ejecución activa para evitar escrituras simultáneas sobre las mismas tablas destino.
-- Usar reintentos controlados y alertas ante fallo, no reprocesos manuales sin trazabilidad.
+La prueba se ejecuta con cuatro fuentes independientes y tablas Delta en Unity Catalog.
 
-## Desarrollo, pruebas y producción
+## Estructura de notebooks
 
-Usar Databricks Asset Bundles para declarar y desplegar el workload de forma consistente entre ambientes:
+| Orden | Notebook | Responsabilidad |
+|---|---|---|
+| 00 | `00_bootstrap_unity_catalog.py` | Crea catálogo, esquemas y Volume; ejecución inicial por ambiente |
+| 01 | `01_bronze_dim_cliente.py` | CSV cliente → `dim_cliente_bronze` |
+| 02 | `02_bronze_dim_producto.py` | CSV producto → `dim_producto_bronze` |
+| 03 | `03_bronze_fact_uso_servicio.py` | CSV uso → `fact_uso_servicio_bronze` |
+| 04 | `04_bronze_fact_pqr.py` | CSV PQR → `fact_pqr_bronze` |
+| 05 | `05_bronze_reconocimiento_calidad.py` | Perfilamiento y validación de Bronze; no transforma Silver/Gold |
+| 10 | `10_silver_dim_cliente.py` | Cliente Bronze → Cliente Silver |
+| 11 | `11_silver_dim_producto.py` | Producto Bronze → Producto Silver |
+| 12 | `12_silver_fact_uso_servicio.py` | Uso Silver y cuarentena |
+| 13 | `13_silver_fact_pqr.py` | PQR Silver |
+| 20 | `20_gold_cliente_360.py` | Producto Gold, reglas de negocio y Quality Gate |
+| 21 | `21_analitica_p5.py` | Consulta analítica P5 |
+
+La numeración separa claramente capas y evita que la organización física del repositorio dependa del orden de ejecución de una sola entidad.
+
+## Dependencias del Job
 
 ```text
-dev  -> desarrollo y pruebas unitarias
-qa   -> pruebas de integración y calidad
-prod -> ejecución programada y consumo certificado
+01 Bronze Cliente ─────┐
+02 Bronze Producto ────┤
+03 Bronze Uso ──────────┤→ 05 Reconocimiento → 10/11/12/13 Silver → 20 Gold → 21 Analítica
+04 Bronze PQR ──────────┘
 ```
 
-Los Bundles deben versionar en Git:
+En producción, el reconocimiento puede ejecutarse como tarea de observabilidad. Si se desea que una anomalía bloquee el pipeline, debe devolver error únicamente ante fallas críticas de entrada, no ante los errores de calidad que el diseño debe enviar a cuarentena.
 
-- Notebooks o archivos fuente.
-- Configuración de Jobs, tareas, dependencias, parámetros y schedules.
-- Variables por ambiente (catálogo, esquema, rutas, alertas).
-- Referencias a librerías y permisos requeridos.
+## Bronze
 
-Flujo recomendado:
+Cada notebook Bronze lee un único archivo desde:
 
-1. Desarrollo local/Databricks Git folder en rama de trabajo.
-2. Pull request con revisión de código.
-3. Validación de sintaxis y pruebas de calidad con datos controlados.
-4. `databricks bundle validate`.
-5. Despliegue a `dev`.
-6. Pruebas de integración.
-7. Aprobación para despliegue a `prod`.
-8. Ejecución del Job y monitoreo posterior.
+```text
+/Volumes/claro_postpago/l1_raw/landing_files/
+```
 
-Terraform complementa los Bundles para infraestructura y gobierno cuando se cuente con permisos corporativos: catálogos, esquemas, grants, identidades, external locations, políticas de cómputo y recursos base de Unity Catalog.
+y escribe una tabla Delta independiente. Bronze conserva los valores originales y agrega únicamente metadatos:
+
+- `_source_file`.
+- `_ingestion_timestamp`.
+- `_pipeline_run_id`.
+- `_record_hash`.
+
+La separación permite reintentar una fuente sin repetir las demás. Los notebooks Silver continúan leyendo los mismos nombres de tablas, por lo que no cambia el contrato entre capas.
+
+Antes de sobrescribir una tabla Bronze se valida que el archivo tenga columnas y al menos un registro. Si falla la lectura, se detiene esa tarea y no se reemplaza la tabla con datos vacíos.
+
+## Silver y calidad
+
+Se mantienen las reglas aprobadas:
+
+- Cliente: eliminar duplicados exactos, ciudad nula como `No informado`, estrato nulo con mediana global y trazabilidad.
+- Producto: tipado y extracción de `capacidad_gb` desde el nombre del producto.
+- Uso: aislar referencias huérfanas, consumo negativo, días inválidos, incidencias inválidas y periodos inválidos en cuarentena.
+- PQR: tipar columnas y estandarizar fechas ISO y `dd/MM/yyyy`.
+- Las tablas derivadas se reconstruyen de forma determinista desde Bronze.
+
+## Gold y Quality Gate
+
+Gold contiene un registro por cliente activo. Uso y PQR se agregan por separado antes del join para evitar fan-out. Se mantiene:
+
+- `churn_risk` con la ventana reproducible de cuatro meses basada en la fecha máxima disponible en PQR Silver.
+- `upsell_flag` cuando el consumo promedio supera `1.80 × capacidad_gb`.
+- Bloqueo si Gold está vacío, hay identificadores nulos o duplicados, riesgo inválido, consumo negativo o PQR abiertos mayores que PQR totales.
+- Conservación de la última publicación válida cuando el Quality Gate falla.
+
+## Orquestación
+
+Se recomienda un Databricks Job con tareas independientes y dependencias explícitas:
+
+1. Bronze Cliente, Producto, Uso y PQR en paralelo.
+2. Reconocimiento/validación de entrada.
+3. Silver Cliente y Producto en paralelo.
+4. Silver Uso y Silver PQR según sus dependencias.
+5. Gold y Quality Gate.
+6. Analítica P5.
+
+Configuración recomendada:
+
+- Una sola ejecución concurrente del producto.
+- Dos reintentos controlados por tarea.
+- Alertas ante fallo del Job o incumplimiento del SLA.
+- Schedule diario, con disponibilidad antes de las 08:00 hora Colombia.
+- El bootstrap se ejecuta una vez por ambiente, no como tarea diaria.
+
+## Evolución productiva
+
+La versión de prueba usa `overwrite` porque los CSV representan el dataset completo y se necesita reproducibilidad. En producción se evolucionará a:
+
+1. Landing inmutable por lote y fecha.
+2. Registro de control con archivo, hash, tamaño, estado y conteos.
+3. Ignorar archivos ya procesados mediante hash.
+4. `MERGE` por llave de negocio: `id_cliente`, `id_producto`, `id_uso` e `id_caso`.
+5. Watermark por lote o periodo.
+6. Recalcular Gold completo o solo clientes impactados según volumen.
+
+## Optimización
+
+Para `fact_uso_servicio_silver` a gran escala:
+
+- Liquid Clustering por `periodo`, `id_cliente` e `id_producto`, si está disponible.
+- Como alternativa, particionar por `periodo` y aplicar `OPTIMIZE`/`ZORDER` según el patrón real de consulta.
+- No particionar por `id_cliente` por su alta cardinalidad.
+- Evaluar auto compaction, optimized writes y tamaño de archivos.
+- Definir la retención de `VACUUM` según auditoría y time travel.
+
+Estas optimizaciones no son necesarias para las 50 filas de la prueba.
+
+## Versionamiento y cambios
+
+Los notebooks, Jobs, parámetros y dependencias deben versionarse en Git. La modificación de una ruta se hace en la definición del Job o en Databricks Asset Bundles, no manualmente en cada consumidor. El cambio se valida con `databricks bundle validate`, pruebas y Pull Request antes del despliegue.
 
 ## Seguridad y gobierno
 
-- Unity Catalog administra catálogo, esquemas, permisos, descubrimiento, linaje y auditoría.
-- Aplicar principio de mínimo privilegio por roles/grupos.
-- Mantener PII como `nombre_completo` y `documento` fuera de Gold si no es necesaria para el caso de uso.
-- Entregar a Mercadeo Digital una vista de consumo con las columnas mínimas requeridas.
-- Controlar cambios en esquema, reglas de calidad y reglas de churn/upsell mediante el data contract y versionamiento Git.
+Unity Catalog administra catálogo, permisos, linaje y auditoría. Gold no publica `documento` ni `nombre_completo`; Mercadeo Digital consume una vista autorizada con mínimo privilegio.

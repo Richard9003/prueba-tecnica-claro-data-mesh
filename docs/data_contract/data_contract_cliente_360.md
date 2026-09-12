@@ -1,155 +1,113 @@
-# Data Contract — Cliente 360 (Churn + Upsell)
+# Data Contract — Cliente 360 Churn & Upsell
 
-## 1. Identidad y propósito
+## 1. Identidad
 
 | Campo | Valor |
 |---|---|
-| Producto de datos | `cliente_360_churn_upsell` |
+| Producto | `cliente_360_churn_upsell` |
 | Dominio productor | Postpago Residencial |
-| Capa de publicación | L3 Certified (Gold) |
-| Propietario de negocio | Líder de Postpago Residencial |
-| Propietario técnico | Data Engineer / Data Product Owner del dominio |
+| Publicación | `claro_postpago.l3_certified.cliente_360_churn_upsell` |
+| Owner de negocio | Líder de Postpago Residencial |
+| Owner técnico | Data Engineer / Data Product Owner del dominio |
 | Consumidores | Mercadeo Digital, Salesforce Data Cloud, Power BI y analítica comercial |
-| Versión | 1.0 |
-| Fecha de creación | 2026-09-11 |
+| Versión | 1.1 |
 
-## 2. Propósito del producto
+## 2. Propósito y grano
 
-Producto de datos certificado que consolida información de clientes activos de Postpago Residencial para apoyar campañas de retención y venta cruzada.
+Producto certificado para campañas de retención y venta cruzada. Su grano es un registro por cliente con `estado_cliente = 'Activo'`, tengan o no uso o PQR.
 
-Integra atributos de cliente, producto actual, consumo, incidencias de red y PQR. Publica indicadores de riesgo de abandono (`churn_risk`) y oportunidad de upsell (`upsell_flag`).
+## 3. Fuentes y linaje
 
-## 3. Grano y cobertura
+| Capa | Fuente |
+|---|---|
+| Bronze | `dim_cliente_bronze`, `dim_producto_bronze`, `fact_uso_servicio_bronze`, `fact_pqr_bronze` |
+| Silver | `dim_cliente_silver`, `dim_producto_silver`, `fact_uso_servicio_silver`, `fact_pqr_silver` |
+| Gold | `20_gold_cliente_360.py` |
+| Analítica | `21_analitica_p5.py` |
 
-- **Grano:** un registro por cliente activo.
-- **Población:** clientes con `estado_cliente = 'Activo'` en `dim_cliente_silver`.
-- **Cobertura:** todos los clientes activos, tengan o no registros de uso o PQR.
-- **Regla de publicación:** el producto solo se certifica cuando supera el quality gate definido en este contrato.
+Bronze conserva los valores originales y los metadatos `_source_file`, `_ingestion_timestamp`, `_pipeline_run_id` y `_record_hash`. Silver aplica tipado, normalización y cuarentena.
 
 ## 4. Esquema publicado
 
-| Columna | Tipo | Descripción | Regla |
-|---|---|---|---|
-| `id_cliente` | STRING | Identificador técnico del cliente | No nulo y único |
-| `segmento` | STRING | Segmento comercial | No nulo |
-| `ciudad` | STRING | Ciudad de residencia | No nulo; usar `No informado` si el origen no la provee |
-| `producto_actual` | STRING | Producto asociado al último período de uso válido | Puede ser nulo si no existe uso |
-| `consumo_promedio_gb` | DOUBLE | Promedio de consumo de datos por cliente | Mayor o igual a 0 |
-| `total_incidencias_red` | LONG | Total de incidencias de red | Mayor o igual a 0 |
-| `promedio_incidencias_red` | DOUBLE | Promedio de incidencias por período | Mayor o igual a 0 |
-| `total_pqr` | LONG | Total de PQR del cliente | Mayor o igual a 0 |
-| `pqr_abiertos` | LONG | PQR con estado `Abierto` | Entre 0 y `total_pqr` |
-| `satisfaccion_promedio` | DOUBLE | Promedio de satisfacción de PQR | Entre 1 y 5 cuando exista PQR; nulo si no hay PQR |
-| `churn_risk` | STRING | Riesgo de abandono | `Alto`, `Medio` o `Bajo` |
-| `upsell_flag` | BOOLEAN | Oportunidad de upsell | `true` o `false` |
-| `fecha_actualizacion` | TIMESTAMP | Marca temporal de publicación | No nula |
-| `_gold_run_id` | STRING | Identificador de ejecución del pipeline | No nulo |
+| Columna | Tipo | Regla |
+|---|---|---|
+| `id_cliente` | STRING | No nulo y único |
+| `segmento` | STRING | Segmento comercial |
+| `ciudad` | STRING | `No informado` si el origen no la provee |
+| `producto_actual` | STRING | Producto del último periodo de uso válido; puede ser nulo |
+| `consumo_promedio_gb` | DOUBLE | Mayor o igual a 0 |
+| `total_incidencias_red` | LONG | Mayor o igual a 0 |
+| `promedio_incidencias_red` | DOUBLE | Mayor o igual a 0 |
+| `total_pqr` | LONG | Mayor o igual a 0 |
+| `pqr_abiertos` | LONG | Entre 0 y `total_pqr` |
+| `satisfaccion_promedio` | DOUBLE | Entre 1 y 5 cuando existe PQR; nulo sin PQR |
+| `churn_risk` | STRING | `Alto`, `Medio` o `Bajo` |
+| `upsell_flag` | BOOLEAN | `true` o `false` |
+| `fecha_actualizacion` | TIMESTAMP | No nula |
+| `_gold_run_id` | STRING | No nulo |
 
-## 5. Semántica de negocio
+## 5. Reglas de negocio
 
 ### `churn_risk`
 
-| Valor | Regla |
-|---|---|
-| Alto | Dos o más PQR de tipo `Queja` o `Reclamo` en los últimos cuatro meses, o promedio de incidencias de red mayor o igual a 3 |
-| Medio | Una PQR de tipo `Queja` o `Reclamo` en los últimos cuatro meses, o promedio de incidencias de red entre 1 y menor que 3 |
-| Bajo | Cualquier otro caso |
+- `Alto`: al menos 2 PQR de tipo `Queja` o `Reclamo` en los últimos cuatro meses, o promedio de incidencias de red mayor o igual a 3.
+- `Medio`: 1 PQR de tipo `Queja` o `Reclamo` en los últimos cuatro meses, o promedio de incidencias entre 1 y menor que 3.
+- `Bajo`: cualquier otro caso.
 
-La ventana de cuatro meses se calcula con base en la máxima `fecha_apertura` disponible en `fact_pqr_silver`, para asegurar reproducibilidad.
+La ventana se calcula desde `MAX(fecha_apertura)` disponible en `fact_pqr_silver`, para que el resultado sea reproducible.
 
 ### `upsell_flag`
 
-`true` cuando `consumo_promedio_gb > capacidad_gb × 1.80`; de lo contrario, `false`.
+```text
+true cuando consumo_promedio_gb > capacidad_gb × 1.80
+```
 
-`capacidad_gb` se deriva de `nombre_producto` en `dim_producto_silver`. Si no se identifica capacidad, el indicador se publica como `false` y el caso debe revisarse en el catálogo de productos.
+`capacidad_gb` se deriva de `nombre_producto`. Si no se puede identificar, se publica `false` y se registra como métrica; no se activa upsell con capacidad desconocida.
 
-## 6. Frecuencia y SLA
+## 6. SLA
 
 | Aspecto | Compromiso |
 |---|---|
 | Frecuencia | Batch diario |
 | Ventana objetivo | 02:00–06:00, hora Colombia |
-| Disponibilidad esperada | Antes de las 08:00, hora Colombia |
+| Disponibilidad | Antes de las 08:00 |
 | Frescura máxima | 24 horas |
-| Retraso tolerado | Hasta 2 horas sobre el SLA |
-| Notificación de incidente | Data Product Owner y consumidores afectados |
+| Retraso tolerado | 2 horas |
+| Incidente | Notificar al Data Product Owner y consumidores afectados |
 
-## 7. Calidad y certificación
+## 7. Quality Gate
 
-### Reglas críticas
+Estas reglas bloquean la publicación de una nueva versión:
 
-| Regla | Acción ante incumplimiento |
-|---|---|
-| Gold no vacío | Bloquear publicación y conservar la última versión válida |
-| `id_cliente` no nulo | Bloquear publicación |
-| `id_cliente` único | Bloquear publicación |
-| `churn_risk` dentro del dominio permitido | Bloquear publicación |
-| `consumo_promedio_gb >= 0` | Bloquear publicación |
-| `pqr_abiertos <= total_pqr` | Bloquear publicación |
+- Gold no vacío.
+- `id_cliente` no nulo y único.
+- `churn_risk` dentro del dominio permitido.
+- `consumo_promedio_gb >= 0`.
+- `pqr_abiertos <= total_pqr`.
 
-### Reglas de monitoreo
+Si falla una regla crítica, se conserva la última versión válida y el Job termina con error trazable.
 
-| Regla | Acción ante incumplimiento |
-|---|---|
-| `satisfaccion_promedio` entre 1 y 5 cuando no sea nula | Registrar métrica e investigar el origen |
-| Producto sin capacidad identificable | Registrar métrica; no activar upsell basado en capacidad desconocida |
-| Ciudad tratada como `No informado` | Registrar métrica de completitud |
-| Estrato imputado en Silver | Registrar métrica de calidad y trazabilidad |
+## 8. Reglas de monitoreo
 
-Los registros inválidos de uso se aíslan en `fact_uso_servicio_rechazados`. Bronze preserva los datos originales y Silver aplica la normalización, validación y cuarentena.
+No bloquean por sí solas, pero generan métricas y seguimiento:
 
-## 8. Linaje y trazabilidad
+- Satisfacción fuera de 1–5 cuando no sea nula.
+- Producto sin capacidad identificable.
+- Ciudad tratada como `No informado`.
+- Estrato imputado en Silver.
+- Registros de uso enviados a `fact_uso_servicio_rechazados`.
+- Porcentaje de rechazados, volumen, frescura y duración del Job.
 
-| Elemento | Definición |
-|---|---|
-| Fuentes Silver | `dim_cliente_silver`, `dim_producto_silver`, `fact_uso_servicio_silver`, `fact_pqr_silver` |
-| Productor técnico | `06_gold_cliente_360.py` |
-| Evidencia de ejecución | `_gold_run_id` y `fecha_actualizacion` |
-| Trazabilidad de origen | `_source_file`, `_ingestion_timestamp`, `_pipeline_run_id` y `_record_hash` preservados en Bronze/Silver |
-| Gobierno | Unity Catalog para catálogo, permisos, linaje y auditoría cuando esté disponible |
+## 9. Seguridad
 
-## 9. Seguridad y acceso
-
-- Clasificación: datos comerciales con identificador técnico de cliente.
-- No se publican `documento` ni `nombre_completo` en Gold.
-- Principio de acceso: mínimo privilegio.
-- Mercadeo Digital debe consumir una vista autorizada con las columnas mínimas necesarias para campañas.
-- En un entorno corporativo, Unity Catalog administra permisos mediante grupos y RBAC/ABAC; se aplican vistas dinámicas o enmascaramiento cuando corresponda.
-
-| Rol | Acceso propuesto |
-|---|---|
-| Data Engineer del dominio | Lectura y modificación controlada |
-| Data Steward / Gobierno de Datos | Lectura y auditoría |
-| Mercadeo Digital | Lectura sobre vista autorizada |
-| Analítica comercial | Lectura bajo autorización del owner |
-| Servicio de activación / Data Cloud | Lectura sobre interfaz de consumo autorizada |
+Gold no publica `documento` ni `nombre_completo`. El consumo de Mercadeo Digital se realiza mediante una vista autorizada y con mínimo privilegio. Unity Catalog administra permisos, catálogo, linaje y auditoría cuando el workspace lo permita.
 
 ## 10. Operación y evolución
 
-La implementación de la prueba usa reconstrucción batch determinista desde Bronze y `overwrite` de las tablas derivadas; por ello, reprocesar el mismo insumo deja el mismo estado final.
+La prueba usa reconstrucción batch determinista desde Bronze y `overwrite` de tablas derivadas. En producción se evolucionará a landing inmutable, control de hash de archivos, watermark, `MERGE` por llave de negocio y recalculo de clientes impactados.
 
-Para producción se debe evolucionar a:
-
-- Control de lote y hash de archivo para evitar reprocesar insumos ya tratados.
-- Watermark batch y `MERGE` por llave de negocio para cargas incrementales.
-- Orquestación con Databricks Jobs/Lakeflow Jobs, dependencias y concurrencia controlada.
-- Métricas y alertas de volumen, rechazo, frescura y SLA.
-- Liquid Clustering, o partición por `periodo` y `OPTIMIZE`/`ZORDER` si Liquid Clustering no está disponible.
-- Databricks Asset Bundles para desplegar el mismo workload entre desarrollo, pruebas y producción.
-- Terraform, cuando aplique, para recursos de infraestructura y gobierno: catálogos, esquemas, permisos y ubicaciones externas.
+El Job productivo tendrá tareas Bronze independientes, Silver dependientes, Gold con Quality Gate y analítica posterior. El bootstrap se ejecuta una vez por ambiente.
 
 ## 11. Gestión de cambios
 
-- Cambios de esquema, semántica, reglas de churn/upsell o SLA requieren nueva versión del contrato.
-- Los cambios deben revisarse mediante control de versiones y pull request.
-- Los consumidores deben ser notificados antes de cambios incompatibles.
-- La versión del pipeline y del contrato debe mantenerse trazable en el repositorio.
-
-## 12. Responsables
-
-| Rol | Responsable |
-|---|---|
-| Owner de negocio | Líder de Postpago Residencial (por asignar) |
-| Owner técnico | Data Engineer / Data Product Owner del dominio |
-| Gobierno de datos | Equipo corporativo de Gobierno de Datos |
-| Soporte operativo | Equipo responsable del producto de datos |
+Cambios de esquema, semántica, reglas, SLA o rutas de notebooks requieren revisión por Pull Request y nueva versión del contrato. Las rutas del Job deben declararse en Databricks Asset Bundles para permitir validación, despliegue y rollback.

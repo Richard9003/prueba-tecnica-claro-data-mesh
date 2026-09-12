@@ -1,165 +1,149 @@
-# Prueba Tecnica - Claro Data Mesh
+# Cliente 360 — Riesgo de Churn y Oportunidad de Upsell
 
-## Objetivo
+Prueba técnica para el cargo de Ingeniero(a) Data Mesh en Claro Colombia.
 
-Implementar el producto de datos `cliente_360_churn_upsell` para el dominio Postpago Residencial, consolidando informacion de clientes, productos, uso y PQR para activar campanas de retencion y upsell.
+## Descripción
 
-## Fuentes de datos
+Pipeline batch que construye un producto de datos certificado (L3) para el dominio Postpago Residencial. Integra cuatro fuentes:
 
-| Archivo | Descripcion |
-|---|---|
-| `dim_cliente.csv` | Maestro de clientes |
-| `dim_producto.csv` | Catalogo de productos y planes |
-| `fact_uso_servicio.csv` | Consumo mensual por cliente y producto |
-| `fact_pqr.csv` | Peticiones, quejas y reclamos |
+- `dim_cliente`: maestro de clientes.
+- `dim_producto`: catálogo de productos.
+- `fact_uso_servicio`: consumo mensual.
+- `fact_pqr`: peticiones, quejas y reclamos.
+
+El resultado es una tabla Gold con un registro por cliente activo, indicadores de `churn_risk` (Alto, Medio, Bajo) y `upsell_flag` (true/false).
 
 ## Arquitectura
 
 ```text
-Fuentes CSV
-    |
-    v
-Bronze (L1 Raw) -> main.claro_postpago.l1_raw.*
-    |
-    v
-Silver (L2 Curated) -> main.claro_postpago.l2_curated.*
-    |
-    v
-Cuarentena -> main.claro_postpago.l2_curated.*_quarantine
-    |
-    v
-Gold (L3 Certified) -> main.claro_postpago.l3_certified.cliente_360_churn_upsell
-    |
-    v
-Consumidores -> Salesforce Data Cloud, Power BI y Mercadeo Digital
+CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitiva
 ```
+
+- **Bronze**: preserva el dato original con metadatos de trazabilidad.
+- **Silver**: normaliza, tipa, aplica reglas de calidad y enva errores a cuarentena.
+- **Gold**: consolida, aplica reglas de negocio y ejecuta un Quality Gate antes de certificarse.
+- **Analitica**: consulta de consumo para la pregunta P5.
 
 ## Estructura del repositorio
 
 ```text
-prueba-tecnica-claro-data-mesh/
-├── src/
-│   ├── ingestion/          # Ingesta a Bronze
-│   ├── silver/             # Transformaciones Silver
-│   ├── gold/               # Producto Gold
-│   ├── quality/            # Controles de calidad
-│   └── common/             # Utilidades compartidas
-├── resources/              # Recursos estaticos
-├── infrastructure/         # Infraestructura como codigo
-├── tests/                  # Pruebas unitarias
-├── docs/
-│   ├── architecture/      # Diagramas
-│   └── data_contract/      # Contratos de datos
-├── .github/workflows/      # CI/CD
-├── .gitignore
+.
+├── databricks.yml
 ├── README.md
-└── databricks.yml          # Databricks Asset Bundle
+├── docs
+│   ├── 08_estrategia_optimizacion_produccion.md
+│   ├── architecture
+│   │   └── cliente_360_architecture.drawio
+│   └── data_contract
+│       └── data_contract_cliente_360.md
+├── infrastructure
+│   └── 00_bootstrap_unity_catalog.py
+├── src
+│   └── notebooks
+│       ├── 01_bronze_dim_cliente.py
+│       ├── 02_bronze_dim_producto.py
+│       ├── 03_bronze_fact_uso_servicio.py
+│       ├── 04_bronze_fact_pqr.py
+│       ├── 05_bronze_reconocimiento_calidad.py
+│       ├── 10_silver_dim_cliente.py
+│       ├── 11_silver_dim_producto.py
+│       ├── 12_silver_fact_uso_servicio.py
+│       ├── 13_silver_fact_pqr.py
+│       ├── 20_gold_cliente_360.py
+│       └── 21_analitica_p5.py
+└── tests
+    └── .gitkeep
 ```
 
-## Convenciones de nombres
+## Requisitos
 
-### Tablas
+- Cuenta Databricks Free/Community activa.
+- Unity Catalog habilitado.
+- Acceso para crear catlogos, esquemas, tablas Delta y Volumes.
 
-| Capa | Patron | Ejemplo |
-|---|---|---|
-| Bronze | `main.claro_postpago.l1_raw.{tabla}_bronze` | `main.claro_postpago.l1_raw.dim_cliente_bronze` |
-| Silver | `main.claro_postpago.l2_curated.{tabla}_silver` | `main.claro_postpago.l2_curated.dim_cliente_silver` |
-| Cuarentena | `main.claro_postpago.l2_curated.{tabla}_quarantine` | `main.claro_postpago.l2_curated.fact_uso_servicio_quarantine` |
-| Gold | `main.claro_postpago.l3_certified.{producto}` | `main.claro_postpago.l3_certified.cliente_360_churn_upsell` |
+## Ejecucin manual
 
-### Git
+1. **Bootstrap (una vez por ambiente)**
 
-- `main`: rama estable.
-- `dev`: desarrollo.
-- `feature/{descripcion}`: nuevas funcionalidades.
+   ```text
+   infrastructure/00_bootstrap_unity_catalog.py
+   ```
 
-Ejemplos de commits:
+   Crea el catálogo `claro_postpago`, esquemas `l1_raw`, `l2_curated`, `l3_certified`, `ops` y el Volume para los CSV.
 
-```bash
-git commit -m "feat: add bronze ingestion"
-git commit -m "fix: handle null estrato"
-git commit -m "docs: add architecture diagram"
-```
+2. **Carga de CSV a Bronze**
 
-## Ejecucion del pipeline
+   Ejecuta en cualquier orden:
 
-### 1. Cargar CSV en Databricks
+   ```text
+   src/notebooks/01_bronze_dim_cliente.py
+   src/notebooks/02_bronze_dim_producto.py
+   src/notebooks/03_bronze_fact_uso_servicio.py
+   src/notebooks/04_bronze_fact_pqr.py
+   ```
 
-Usar Unity Catalog Volumes o la opcion Upload Data de la interfaz. No usar `/FileStore/tables/` en el entorno Serverless validado.
+3. **Reconocimiento y calidad (opcional)**
 
-Ruta de trabajo prevista para archivos, sujeta a validacion de permisos:
+   ```text
+   src/notebooks/05_bronze_reconocimiento_calidad.py
+   ```
 
-```text
-/Volumes/main/claro_postpago/<schema>/<volume>/
-```
+   Perfila las cuatro tablas Bronze, identifica duplicados, nulos, referencias huéı´rfanas y errores de formato. No transforma Silver/Gold.
 
-### 2. Ejecutar notebooks en orden
+4. **Silver**
 
-1. `src/ingestion/01_bronze_ingestion.ipynb`
-2. `src/silver/02_silver_dimensions.ipynb`
-3. `src/silver/03_silver_facts.ipynb`
-4. `src/quality/04_quarantine_and_quality.ipynb`
-5. `src/gold/05_gold_cliente_360.ipynb`
-6. `src/quality/06_gold_quality_gate.ipynb`
+   ```text
+   src/notebooks/10_silver_dim_cliente.py
+   src/notebooks/11_silver_dim_producto.py
+   src/notebooks/12_silver_fact_uso_servicio.py
+   src/notebooks/13_silver_fact_pqr.py
+   ```
 
-### 3. Validar quality gate
+   Aplica reglas de calidad, normalizacin y cuarentena.
 
-- Verificar las metricas de calidad.
-- Confirmar que Gold cumple las reglas de certificacion.
-- Bloquear la publicacion si falla una regla critica.
+5. **Gold**
 
-### 4. Exportar entregables
+   ```text
+   src/notebooks/20_gold_cliente_360.py
+   ```
 
-- Notebooks: `.dbc` o enlace compartido.
-- Diagrama: `.png` o `.pdf` desde draw.io.
-- Respuestas teoricas: `.docx` o `.pdf`.
-- Presentacion: `.pptx`.
+   Construye el producto certificado con `churn_risk` y `upsell_flag`. Ejecuta el Quality Gate y bloquea la publicación si falla una regla crítica.
+
+6. **Analitica P5**
+
+   ```text
+   src/notebooks/21_analitica_p5.py
+   ```
+
+   Consulta SQL que devuelve, por segmento y ciudad, el número de clientes en riesgo Alto y el promedio de satisfacción.
+
+## Prximos pasos (produccin)
+
+- Orquestacin con Databricks Jobs/Lakeflow.
+- Control de lote y hash de archivo para evitar reprocesar insumos.
+- MERGE incremental en lugar de overwrite completo.
+- Liquid Clustering o particin por periodo + OPTIMIZE/ZORDER.
+- Databricks Asset Bundles para desplegar entre dev, qa y prod.
+- Mtricas, alertas y SLA de disponibilidad.
 
 ## Entregables
 
-| Codigo | Descripcion | Formato |
-|---|---|---|
-| E1 | Notebooks Bronze, Silver y Gold | `.dbc` o enlace |
-| E2 | Scripts de calidad | `.py` o `.sql` |
-| E3 | Diagrama de arquitectura | `.png` o `.pdf` |
-| E4 | Respuestas teoricas T1-T7 | `.pdf` o `.docx` |
-| E5 | Presentacion ejecutiva, maximo 10 laminas | `.pptx` |
-
-## Data contract inicial
-
-| Elemento | Propuesta |
+| Cdigo | Descripcin |
 |---|---|
-| Producto | `cliente_360_churn_upsell` |
-| Dominio | Postpago Residencial |
-| Capa | L3 / Certified / Gold |
-| Owner de negocio | Lider de Postpago Residencial |
-| Owner tecnico | Data Engineer del dominio |
-| Consumidores | Mercadeo Digital, Data Cloud y Power BI |
-| Grano | Un registro por cliente activo |
-| SLA | Actualizacion diaria, disponible antes de las 08:00 |
-| Esquema minimo | `id_cliente`, `segmento`, `ciudad`, `producto_actual`, `consumo_promedio_gb`, `total_incidencias_red`, `total_pqr`, `pqr_abiertos`, `satisfaccion_promedio`, `churn_risk`, `upsell_flag` |
-| Reglas de calidad | `id_cliente` no nulo y unico; `churn_risk` valido; satisfaccion entre 1 y 5; consumo no negativo |
-| Seguridad | Acceso restringido y minimo privilegio |
-| Trazabilidad | Fuente, fecha de ingesta y tablas de origen |
-| Incumplimiento | No certificar Gold; generar alerta y preservar evidencia |
+| E1 | Notebooks Bronze, Silver, Gold y analitica |
+| E2 | Validaciones de calidad en Bronze y Silver |
+| E3 | Diagrama de arquitectura en `docs/architecture/` |
+| E4 | Respuestas tericas (documento aparte) |
+| E5 | Presentacin ejecutiva (documento aparte) |
+| E6 | Estrategia de optimizacin productiva (`08_estrategia_optimizacion_produccion.md`) |
+| E7 | Data contract (`docs/data_contract/data_contract_cliente_360.md`) |
 
-## Optimizacion P6
+## Gobierno
 
-Para `fact_uso_servicio` a gran escala:
+- Unity Catalog administra catálogo, esquemas, permisos, linaje y auditora.
+- Gold no publica `documento` ni `nombre_completo`.
+- Mercadeo Digital consume una vista autorizada con mnimo privilegio.
 
-- Particionar por `periodo` si el volumen y los patrones de consulta lo justifican.
-- Evaluar `OPTIMIZE` y clustering por `id_cliente` e `id_producto` segun el entorno.
-- Evitar particionar por `id_cliente` debido a su alta cardinalidad.
-- Aplicar `VACUUM` solo con una politica de retencion aprobada.
+## Licencia
 
-## Estado
-
-El repositorio contiene la estructura inicial y el README. Los cuatro CSV aun deben recibirse para realizar el perfilamiento real y cerrar las reglas de transformacion.
-
-## Proximos pasos
-
-1. Recibir los cuatro CSV.
-2. Perfilar estructura, volumen y calidad.
-3. Aprobar decisiones de tratamiento.
-4. Implementar Bronze, Silver, cuarentena y Gold.
-5. Ejecutar quality gate y generar evidencias.
+Uso interno — Claro Colombia.
