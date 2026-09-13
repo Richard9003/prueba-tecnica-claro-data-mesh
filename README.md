@@ -45,6 +45,7 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitica
 │   ├── architecture
 │   │   ├── E3_cliente_360_architecture.drawio
 │   │   └── E3_cliente_360_arquitecture.jpg
+│   │   └── E3_job_databricks_ejecucion_exitosa.jpg
 │   ├── data_contract
 │   │   └── data_contract_cliente_360.md
 │   └── entregables
@@ -171,7 +172,7 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitica
 |---|---|
 | E1 | Notebooks Bronze, Silver, Gold y analitica |
 | E2 | Validaciones de calidad en Bronze y Silver |
-| E3 | Diagrama de arquitectura en `docs/architecture/` |
+| E3 | Diagrama de arquitectura + captura de ejecución del Job en `docs/architecture/` |
 | E4 | Respuestas teoricas (documento aparte) |
 | E5 | Presentacion ejecutiva (documento aparte) |
 | E6 | Estrategia de optimizacion productiva (`docs/08_estrategia_optimizacion_produccion.md`) |
