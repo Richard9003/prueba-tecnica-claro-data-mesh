@@ -33,6 +33,11 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitica
 - **Analitica**: consulta de consumo para la pregunta P5.
 
 
+## Diagrama de arquitectura
+
+![Arquitectura Cliente 360](docs/architecture/E3_cliente_360_arquitecture.jpg)
+
+
 ## Estructura del repositorio
 
 
@@ -44,11 +49,12 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitica
 │   ├── 08_estrategia_optimizacion_produccion.md
 │   ├── architecture
 │   │   ├── E3_cliente_360_architecture.drawio
-│   │   └── E3_cliente_360_arquitecture.jpg
-│   │   └── E3_job_databricks_ejecucion_exitosa.jpg
+│   │   ├── E3_cliente_360_arquitecture.jpg
+│   │   └── E3_job_databricks_ejecucion_exitosa.png
 │   ├── data_contract
 │   │   └── data_contract_cliente_360.md
 │   └── entregables
+│       ├── E1_E2_notebooks_export.dbc
 │       ├── E4_respuestas_teoricas_Ricardo_Suarez.pdf
 │       └── E5_presentacion_ejecutiva_cliente_360.pptx
 ├── infrastructure
@@ -170,11 +176,13 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitica
 
 | Codigo | Descripcion |
 |---|---|
-| E1 | Notebooks Bronze, Silver, Gold y analitica |
-| E2 | Validaciones de calidad en Bronze y Silver |
-| E3 | Diagrama de arquitectura + captura de ejecución del Job en `docs/architecture/` |
-| E4 | Respuestas teoricas (documento aparte) |
-| E5 | Presentacion ejecutiva (documento aparte) |
+| E1 | Notebooks Bronze, Silver, Gold y analitica (exportados en `E1_E2_notebooks_export.dbc`) |
+| E2 | Validaciones de calidad en Bronze y Silver (exportados en `E1_E2_notebooks_export.dbc`) |
+| E3 | Diagrama de arquitectura (`docs/architecture/E3_cliente_360_architecture.drawio`) |
+| E3-img | Captura de arquitectura (`docs/architecture/E3_cliente_360_arquitecture.jpg`) |
+| E3-job | Captura de ejecución del Job (`docs/architecture/E3_job_databricks_ejecucion_exitosa.png`) |
+| E4 | Respuestas teoricas (`docs/entregables/E4_respuestas_teoricas_Ricardo_Suarez.pdf`) |
+| E5 | Presentacion ejecutiva (`docs/entregables/E5_presentacion_ejecutiva_cliente_360.pptx`) |
 | E6 | Estrategia de optimizacion productiva (`docs/08_estrategia_optimizacion_produccion.md`) |
 | E7 | Data contract (`docs/data_contract/data_contract_cliente_360.md`) |
 
