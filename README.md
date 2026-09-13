@@ -1,30 +1,40 @@
 # Cliente 360 — Riesgo de Churn y Oportunidad de Upsell
 
+
 Prueba técnica para el cargo de Ingeniero(a) Data Mesh en Claro Colombia.
+
 
 ## Descripción
 
+
 Pipeline batch que construye un producto de datos certificado (L3) para el dominio Postpago Residencial. Integra cuatro fuentes:
+
 
 - `dim_cliente`: maestro de clientes.
 - `dim_producto`: catálogo de productos.
 - `fact_uso_servicio`: consumo mensual.
 - `fact_pqr`: peticiones, quejas y reclamos.
 
+
 El resultado es una tabla Gold con un registro por cliente activo, indicadores de `churn_risk` (Alto, Medio, Bajo) y `upsell_flag` (true/false).
+
 
 ## Arquitectura
 
+
 ```text
-CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitiva
+CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitica
 ```
 
+
 - **Bronze**: preserva el dato original con metadatos de trazabilidad.
-- **Silver**: normaliza, tipa, aplica reglas de calidad y enva errores a cuarentena.
+- **Silver**: normaliza, tipa, aplica reglas de calidad y envia errores a cuarentena.
 - **Gold**: consolida, aplica reglas de negocio y ejecuta un Quality Gate antes de certificarse.
 - **Analitica**: consulta de consumo para la pregunta P5.
 
+
 ## Estructura del repositorio
+
 
 ```text
 .
@@ -33,9 +43,13 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitiva
 ├── docs
 │   ├── 08_estrategia_optimizacion_produccion.md
 │   ├── architecture
-│   │   └── cliente_360_architecture.drawio
-│   └── data_contract
-│       └── data_contract_cliente_360.md
+│   │   ├── E3_cliente_360_architecture.drawio
+│   │   └── E3_cliente_360_arquitecture.jpg
+│   ├── data_contract
+│   │   └── data_contract_cliente_360.md
+│   └── entregables
+│       ├── E4_respuestas_teoricas_Ricardo_Suarez.pdf
+│       └── E5_presentacion_ejecutiva_cliente_360.pptx
 ├── infrastructure
 │   └── 00_bootstrap_unity_catalog.py
 ├── src
@@ -55,25 +69,34 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitiva
     └── .gitkeep
 ```
 
+
 ## Requisitos
+
 
 - Cuenta Databricks Free/Community activa.
 - Unity Catalog habilitado.
-- Acceso para crear catlogos, esquemas, tablas Delta y Volumes.
+- Acceso para crear catalogos, esquemas, tablas Delta y Volumes.
 
-## Ejecucin manual
+
+## Ejecucion manual
+
 
 1. **Bootstrap (una vez por ambiente)**
+
 
    ```text
    infrastructure/00_bootstrap_unity_catalog.py
    ```
 
-   Crea el catálogo `claro_postpago`, esquemas `l1_raw`, `l2_curated`, `l3_certified`, `ops` y el Volume para los CSV.
+
+   Crea el catalogo `claro_postpago`, esquemas `l1_raw`, `l2_curated`, `l3_certified`, `ops` y el Volume para los CSV.
+
 
 2. **Carga de CSV a Bronze**
 
+
    Ejecuta en cualquier orden:
+
 
    ```text
    src/notebooks/01_bronze_dim_cliente.py
@@ -82,15 +105,20 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitiva
    src/notebooks/04_bronze_fact_pqr.py
    ```
 
+
 3. **Reconocimiento y calidad (opcional)**
+
 
    ```text
    src/notebooks/05_bronze_reconocimiento_calidad.py
    ```
 
-   Perfila las cuatro tablas Bronze, identifica duplicados, nulos, referencias huéı´rfanas y errores de formato. No transforma Silver/Gold.
+
+   Perfila las cuatro tablas Bronze, identifica duplicados, nulos, referencias huerfanas y errores de formato. No transforma Silver/Gold.
+
 
 4. **Silver**
+
 
    ```text
    src/notebooks/10_silver_dim_cliente.py
@@ -99,51 +127,66 @@ CSV → Bronze Delta → Silver → Gold + Quality Gate → Analitiva
    src/notebooks/13_silver_fact_pqr.py
    ```
 
-   Aplica reglas de calidad, normalizacin y cuarentena.
+
+   Aplica reglas de calidad, normalizacion y cuarentena.
+
 
 5. **Gold**
+
 
    ```text
    src/notebooks/20_gold_cliente_360.py
    ```
 
-   Construye el producto certificado con `churn_risk` y `upsell_flag`. Ejecuta el Quality Gate y bloquea la publicación si falla una regla crítica.
+
+   Construye el producto certificado con `churn_risk` y `upsell_flag`. Ejecuta el Quality Gate y bloquea la publicacion si falla una regla critica.
+
 
 6. **Analitica P5**
+
 
    ```text
    src/notebooks/21_analitica_p5.py
    ```
 
-   Consulta SQL que devuelve, por segmento y ciudad, el número de clientes en riesgo Alto y el promedio de satisfacción.
 
-## Prximos pasos (produccin)
+   Consulta SQL que devuelve, por segmento y ciudad, el numero de clientes en riesgo Alto y el promedio de satisfaccion.
 
-- Orquestacin con Databricks Jobs/Lakeflow.
+
+## Proximos pasos (produccion)
+
+
+- Orquestacion con Databricks Jobs/Lakeflow.
 - Control de lote y hash de archivo para evitar reprocesar insumos.
 - MERGE incremental en lugar de overwrite completo.
-- Liquid Clustering o particin por periodo + OPTIMIZE/ZORDER.
+- Liquid Clustering o particion por periodo + OPTIMIZE/ZORDER.
 - Databricks Asset Bundles para desplegar entre dev, qa y prod.
-- Mtricas, alertas y SLA de disponibilidad.
+- Metricas, alertas y SLA de disponibilidad.
+
 
 ## Entregables
 
-| Cdigo | Descripcin |
+
+| Codigo | Descripcion |
 |---|---|
 | E1 | Notebooks Bronze, Silver, Gold y analitica |
 | E2 | Validaciones de calidad en Bronze y Silver |
 | E3 | Diagrama de arquitectura en `docs/architecture/` |
-| E4 | Respuestas tericas (documento aparte) |
-| E5 | Presentacin ejecutiva (documento aparte) |
-| E6 | Estrategia de optimizacin productiva (`08_estrategia_optimizacion_produccion.md`) |
+| E4 | Respuestas teoricas (documento aparte) |
+| E5 | Presentacion ejecutiva (documento aparte) |
+| E6 | Estrategia de optimizacion productiva (`docs/08_estrategia_optimizacion_produccion.md`) |
 | E7 | Data contract (`docs/data_contract/data_contract_cliente_360.md`) |
+
 
 ## Gobierno
 
-- Unity Catalog administra catálogo, esquemas, permisos, linaje y auditora.
+
+- Unity Catalog administra catalogo, esquemas, permisos, linaje y auditoria.
 - Gold no publica `documento` ni `nombre_completo`.
-- Mercadeo Digital consume una vista autorizada con mnimo privilegio.
+- Mercadeo Digital consume una vista autorizada con minimo privilegio.
+
 
 ## Licencia
+
 
 Uso interno — Claro Colombia.
